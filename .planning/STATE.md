@@ -1,0 +1,60 @@
+# Project State
+
+## Project Reference
+
+See: .planning/PROJECT.md (updated 2026-05-22)
+
+**Core value:** A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
+
+**Current focus:** Phase 1 — Foundation — Materializer
+
+## Current Position
+
+Phase: 1 of 3 (Foundation — Materializer)
+Plan: - of - (not yet planned)
+Status: Ready to plan
+Last activity: 2026-05-23 — ROADMAP.md created
+
+Progress: [░░░░░░░░░░] 0%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 0
+- Average duration: —
+- Total execution time: 0 hours
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| 1. Foundation | — | — | — |
+| 2. SQL Engine | — | — | — |
+| 3. Packaging | — | — | — |
+
+**Recent Trend:**
+- Last 5 plans: —
+- Trend: —
+
+## Accumulated Context
+
+### Decisions
+
+Decisions are logged in PROJECT.md Key Decisions table.
+
+No decisions made yet.
+
+### Pending Todos
+
+None yet.
+
+### Blockers/Concerns
+
+- **Research gap**: SQL parser choice (hand-written vs vitess) deferred to Phase 2 planning. Hand-written is simpler for v1 subset; vitess is future-proof. Both viable.
+- **Research gap**: Single `natsql-views` KV bucket vs per-view buckets deferred to Phase 1 planning. Start with single bucket.
+
+## Session Continuity
+
+Last session: 2026-05-23 (initial project setup)
+Stopped at: ROADMAP.md and STATE.md created
+Resume file: None

@@ -74,25 +74,25 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MAT-01 | | Pending |
-| MAT-02 | | Pending |
-| MAT-03 | | Pending |
-| MAT-04 | | Pending |
-| QRY-01 | | Pending |
-| QRY-02 | | Pending |
-| QRY-03 | | Pending |
-| IFC-01 | | Pending |
-| IFC-02 | | Pending |
-| IFC-03 | | Pending |
-| DEP-01 | | Pending |
-| DEP-02 | | Pending |
-| DEP-03 | | Pending |
-| DEP-04 | | Pending |
+| MAT-01 | Phase 1 | Pending |
+| MAT-02 | Phase 1 | Pending |
+| MAT-03 | Phase 1 | Pending |
+| MAT-04 | Phase 1 | Pending |
+| QRY-01 | Phase 2 | Pending |
+| QRY-02 | Phase 2 | Pending |
+| QRY-03 | Phase 2 | Pending |
+| IFC-01 | Phase 2 | Pending |
+| IFC-02 | Phase 2 | Pending |
+| IFC-03 | Phase 3 | Pending |
+| DEP-01 | Phase 3 | Pending |
+| DEP-02 | Phase 3 | Pending |
+| DEP-03 | Phase 3 | Pending |
+| DEP-04 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 14 total
-- Mapped to phases: 0
-- Unmapped: 14 ⚠️
+- Mapped to phases: 14
+- Unmapped: 0 ✅
 
 ---
 *Requirements defined: 2026-05-22*
