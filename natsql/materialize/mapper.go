@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql"
+	natsql "natsql/cfg"
 	"natsql/kv"
 )
 

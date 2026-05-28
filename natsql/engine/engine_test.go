@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
-	natsqlpkg "natsql"
+	natsqlpkg "natsql/cfg"
 	"natsql/engine"
 	"natsql/kv"
 )

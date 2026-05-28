@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql"
+	natsql "natsql/cfg"
 )
 
 func TestNewMapper_NilConfig_ReturnsError(t *testing.T) {
