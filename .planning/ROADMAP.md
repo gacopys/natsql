@@ -33,7 +33,12 @@ Each phase delivers a complete, testable capability. No phase depends on unbuilt
   4. Malformed events (e.g., invalid JSON, missing key field, type mismatch) are logged and skipped without crashing the materializer
   5. Materializer processes events in order and acks only after successful KV writes (at-least-once delivery)
 
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
+
+Plans:
+- [ ] 01-01-PLAN.md — Config & KV Infrastructure (Wave 1)
+- [ ] 01-02-PLAN.md — Materializer Components (Wave 2)
+- [ ] 01-03-PLAN.md — Engine + Main + Integration (Wave 3)
 
 ### Phase 2: SQL Query Engine + Interfaces
 
