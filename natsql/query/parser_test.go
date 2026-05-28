@@ -36,7 +36,7 @@ func TestParseSelectStar(t *testing.T) {
 }
 
 func TestParseSelectColumns(t *testing.T) {
-	q, err := Parse(`SELECT name, age FROM users`)
+	q, err := Parse(`SELECT name, age FROM users WHERE id = 'x'`)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
 	}
@@ -52,8 +52,8 @@ func TestParseSelectColumns(t *testing.T) {
 	if q.From != "users" {
 		t.Errorf("From = %q, want %q", q.From, "users")
 	}
-	if len(q.Where) != 0 {
-		t.Errorf("Where = %v, want 0 conditions (no WHERE clause)", q.Where)
+	if len(q.Where) != 1 {
+		t.Errorf("Where conditions = %v, want 1 condition", q.Where)
 	}
 	if q.Limit != 0 {
 		t.Errorf("Limit = %d, want 0", q.Limit)
@@ -112,6 +112,13 @@ func TestParseRejectsNoWhere(t *testing.T) {
 	_, err := Parse(`SELECT * FROM users`)
 	if err == nil {
 		t.Fatal("expected error for missing WHERE clause, got nil")
+	}
+}
+
+func TestParseRejectsNoWhereWithColumns(t *testing.T) {
+	_, err := Parse(`SELECT name, age FROM users`)
+	if err == nil {
+		t.Fatal("expected error for missing WHERE clause with explicit columns, got nil")
 	}
 }
 
