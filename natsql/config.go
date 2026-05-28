@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nats-io/nats.go"
 	"gopkg.in/yaml.v3"
 
 	"natsql/kv"
@@ -32,9 +33,33 @@ func (ct ColumnType) Valid() bool {
 	}
 }
 
+// NATSConfig configures the NATS connection for the engine.
+type NATSConfig struct {
+	URL      string `yaml:"url,omitempty" json:"url,omitempty"`           // default "nats://localhost:4222"
+	Embedded bool   `yaml:"embedded,omitempty" json:"embedded,omitempty"` // start embedded NATS
+	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"` // JetStream store dir
+}
+
+// HTTPConfig configures the HTTP query API server.
+type HTTPConfig struct {
+	Port int `yaml:"port,omitempty" json:"port,omitempty"` // default 8080
+}
+
 // Config is the top-level configuration, loaded from YAML or JSON.
 type Config struct {
+	NATS  NATSConfig   `yaml:"nats,omitempty" json:"nats,omitempty"`
+	HTTP  HTTPConfig   `yaml:"http,omitempty" json:"http,omitempty"`
 	Views []ViewConfig `yaml:"views" json:"views"`
+}
+
+// SetDefaults fills zero-valued fields with sensible defaults.
+func (cfg *Config) SetDefaults() {
+	if cfg.NATS.URL == "" {
+		cfg.NATS.URL = nats.DefaultURL
+	}
+	if cfg.HTTP.Port == 0 {
+		cfg.HTTP.Port = 8080
+	}
 }
 
 // ViewConfig defines one materialized view.
@@ -104,6 +129,8 @@ func LoadConfig(path string) (*Config, error) {
 // Validate checks the entire config and returns all validation errors.
 func (cfg *Config) Validate() error {
 	var errs []string
+
+	cfg.SetDefaults()
 
 	viewNames := make(map[string]bool)
 	for i, v := range cfg.Views {

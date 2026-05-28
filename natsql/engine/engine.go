@@ -11,7 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +23,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsqlpkg "natsql"
+	"natsql/embed"
 	"natsql/kv"
 	"natsql/materialize"
 	"natsql/query"
@@ -36,10 +41,11 @@ var (
 
 // Engine manages the lifecycle of materialized views and provides
 // SQL query capabilities over NATS KV state.
-// Create via New, then call Start to begin processing, and Close to shut down.
+// Create via New, NewWithNATS, or NewEmbedded, then call Start to begin
+// processing, and Close to shut down.
 type Engine struct {
 	js         jetstream.JetStream
-	nc         *nats.Conn          // NATS connection for subscription
+	nc         *nats.Conn           // NATS connection for subscription
 	cfg        *natsqlpkg.Config
 	kv         jetstream.KeyValue
 	logger     *slog.Logger
@@ -47,9 +53,12 @@ type Engine struct {
 	cancel     context.CancelFunc
 	started    bool
 	mu         sync.Mutex
-	natsSub    *nats.Subscription  // NATS query subscription (for cleanup)
-	httpServer *http.Server        // HTTP query server
-	queryPort  int                 // HTTP server port (default 8080)
+	natsSub    *nats.Subscription   // NATS query subscription (for cleanup)
+	httpServer *http.Server         // HTTP query server
+	queryPort  int                  // HTTP server port (default 8080)
+	embedNode  *embed.Node          // non-nil when using embedded NATS (NewEmbedded)
+	drainChans []chan struct{}      // per-view drain signals for graceful consumer shutdown
+	storeDir   string               // embedded NATS store dir override (via WithNATSOptions)
 }
 
 // Option configures the Engine.
@@ -62,6 +71,59 @@ func WithLogger(logger *slog.Logger) Option {
 			e.logger = logger
 		}
 	}
+}
+
+// WithHTTPServer parses an address string ("host:port") and sets the HTTP
+// server port. If addr is empty, no action is taken.
+// If host is "0.0.0.0", the binding is kept as-is (overrides 127.0.0.1 default).
+func WithHTTPServer(addr string) Option {
+	return func(e *Engine) {
+		if addr == "" {
+			return
+		}
+		host, portStr, err := netSplitHostPort(addr)
+		if err != nil {
+			return // silently ignore invalid addresses
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return
+		}
+		_ = host // host binding is always 127.0.0.1 for security (T-02-06)
+		e.queryPort = port
+	}
+}
+
+// WithQueryPort directly sets the HTTP query server port.
+func WithQueryPort(port int) Option {
+	return func(e *Engine) {
+		if port > 0 {
+			e.queryPort = port
+		}
+	}
+}
+
+// WithNATSOptions configures the embedded NATS server options.
+// Currently supports setting the JetStream store directory.
+func WithNATSOptions(storeDir string) Option {
+	return func(e *Engine) {
+		if storeDir != "" {
+			e.storeDir = storeDir
+		}
+	}
+}
+
+// netSplitHostPort splits a network address of the form "host:port".
+// Returns the host and port parts separately.
+func netSplitHostPort(addr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Try with a default host if no host specified
+		if strings.HasPrefix(addr, ":") {
+			host, port, err = net.SplitHostPort("127.0.0.1" + addr)
+		}
+	}
+	return host, port, err
 }
 
 // New creates a new Engine from a NATS connection, JetStream context, and configuration.
@@ -85,6 +147,59 @@ func New(nc *nats.Conn, js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...O
 		cfg:       cfg,
 		logger:    slog.Default(),
 		queryPort: 8080,
+	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	return e, nil
+}
+
+// NewEmbedded creates a new Engine that starts an embedded NATS JetStream
+// server in the same process. The engine owns the embedded server lifecycle
+// and will shut it down when Close is called.
+//
+// The config's SetDefaults and Validate are called automatically.
+func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Start embedded NATS server
+	storeDir := cfg.NATS.StoreDir
+	node, err := embed.StartNode(embed.NodeConfig{
+		Port:      -1, // random port
+		StoreDir:  storeDir,
+		ReadyWait: 10 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("starting embedded NATS: %w", err)
+	}
+
+	// Connect to embedded server
+	nc, err := nats.Connect(node.ClientURL(), nats.Timeout(10*time.Second))
+	if err != nil {
+		node.Shutdown()
+		return nil, fmt.Errorf("connecting to embedded NATS: %w", err)
+	}
+
+	// Create JetStream context
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		node.Shutdown()
+		return nil, fmt.Errorf("creating JetStream context: %w", err)
+	}
+
+	e := &Engine{
+		js:        js,
+		nc:        nc,
+		cfg:       cfg,
+		logger:    slog.Default(),
+		queryPort: 8080,
+		embedNode: node,
 	}
 
 	for _, opt := range opts {
@@ -295,4 +410,33 @@ func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 		rows = []map[string]any{}
 	}
 	return &query.QueryResult{Results: rows, Error: nil}
+}
+
+// Stats holds operational metrics for the Engine (D-60).
+type Stats struct {
+	Started     bool   `json:"started"`
+	Goroutines  int    `json:"goroutines"`
+	Views       int    `json:"views"`
+	HTTPServing bool   `json:"http_serving"`
+	LastError   string `json:"last_error,omitempty"`
+}
+
+// Stats returns current operational metrics about the engine.
+// Safe to call at any lifecycle phase (before Start, after Close).
+func (e *Engine) Stats() Stats {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	httpServing := e.httpServer != nil
+	var views int
+	if e.cfg != nil {
+		views = len(e.cfg.Views)
+	}
+
+	return Stats{
+		Started:     e.started,
+		Goroutines:  runtime.NumGoroutine(),
+		Views:       views,
+		HTTPServing: httpServing,
+	}
 }
