@@ -3,6 +3,7 @@ package kv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -50,15 +51,16 @@ func MustInitBucket(ctx context.Context, js jetstream.JetStream, replicas int) j
 }
 
 // PkKey returns the KV key for a row in the given view.
-// Format: "{view_name}:{pkValue}" per D-07.
+// Format: "{view_name}/pk/{pkValue}" per D-07 (adapted for NATS KV key restrictions).
+// NATS KV keys only support [a-zA-Z0-9_\-./=], so '/' is used instead of ':'.
 func PkKey(viewName, pkValue string) string {
-	return viewName + ":" + pkValue
+	return viewName + "/pk/" + pkValue
 }
 
 // SchemaKey returns the KV key for the schema of a view.
-// Format: "schemas:{viewName}" per D-08.
+// Format: "{view_name}/meta/schema" per D-08 (adapted for NATS KV key restrictions).
 func SchemaKey(viewName string) string {
-	return SchemaPrefix + viewName
+	return viewName + "/meta/schema"
 }
 
 // StoreSchema marshals a ViewSchema and stores it in KV at the schema key.
@@ -79,7 +81,7 @@ func StoreSchema(ctx context.Context, kv jetstream.KeyValue, viewName string, sc
 func LoadSchema(ctx context.Context, kv jetstream.KeyValue, viewName string) (*ViewSchema, error) {
 	entry, err := kv.Get(ctx, SchemaKey(viewName))
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("loading schema: %w", err)
@@ -99,8 +101,8 @@ func LoadSchema(ctx context.Context, kv jetstream.KeyValue, viewName string) (*V
 func EncodePKValue(val any) string {
 	switch v := val.(type) {
 	case string:
-		if strings.Contains(v, ":") {
-			panic(fmt.Sprintf("EncodePKValue: string value %q contains ':' which is not allowed in KV keys", v))
+		if strings.ContainsAny(v, "/:") {
+			panic(fmt.Sprintf("EncodePKValue: string value %q contains '/' or ':' which are not allowed in KV keys", v))
 		}
 		return v
 	case int:
