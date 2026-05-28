@@ -1,0 +1,22 @@
+meta {
+  name: Boolean filter
+  type: http
+  seq: 2
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sql": "SELECT * FROM users WHERE active = true"
+  }
+}

@@ -1,0 +1,34 @@
+# Example config for natsql server.
+#
+# This config defines two materialized views. The natsql server
+# will consume events from both streams and make them queryable.
+#
+# Usage:
+#   natsql server --config=config.yaml --embedded
+
+nats:
+  embedded: true
+  port: 4223
+  store_dir: ./data/natsql
+
+http:
+  port: 8080
+
+views:
+  - name: users
+    source_stream: events
+    key_fields: [user_id]
+    columns:
+      - {name: user_id,  from: id,    type: string,  primary_key: true}
+      - {name: name,     from: name,  type: string}
+      - {name: email,    from: email, type: string}
+      - {name: age,      from: age,   type: number}
+
+  - name: products
+    source_stream: inventory
+    key_fields: [sku]
+    columns:
+      - {name: sku,      from: sku,    type: string,  primary_key: true}
+      - {name: title,    from: title,  type: string}
+      - {name: price,    from: price,  type: number}
+      - {name: in_stock, from: stock,  type: boolean}

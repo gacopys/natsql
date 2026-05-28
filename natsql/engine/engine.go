@@ -169,8 +169,12 @@ func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 
 	// Start embedded NATS server
 	storeDir := cfg.NATS.StoreDir
+	natsPort := cfg.NATS.Port
+	if natsPort == 0 {
+		natsPort = -1 // random port
+	}
 	node, err := embed.StartNode(embed.NodeConfig{
-		Port:      -1, // random port
+		Port:      natsPort,
 		StoreDir:  storeDir,
 		ReadyWait: 10 * time.Second,
 	})
@@ -373,6 +377,8 @@ func (e *Engine) Close() error {
 //
 // Returns a QueryResult with typed JSON values per D-29/D-30.
 func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
+	e.logger.Info("executing SQL", "sql", sql)
+
 	// Ensure KV bucket is available (works before Start())
 	kvb := e.kv
 	if kvb == nil {

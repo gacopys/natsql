@@ -24,12 +24,12 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 		return nil, fmt.Errorf("PK lookup failed: %w", err)
 	}
 
-	row, err := projectRow(entry.Value(), p.Columns)
-	if err != nil {
-		return nil, fmt.Errorf("projecting row: %w", err)
+	var row map[string]any
+	if err := json.Unmarshal(entry.Value(), &row); err != nil {
+		return nil, fmt.Errorf("unmarshaling row: %w", err)
 	}
 
-	return []map[string]any{row}, nil
+	return []map[string]any{projectRow(row, p.Columns)}, nil
 }
 
 // Execute performs a full scan using kv.ListKeys() with client-side filtering.
@@ -57,14 +57,19 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 			return nil, fmt.Errorf("getting key %q: %w", key, err)
 		}
 
-		row, err := projectRow(entry.Value(), p.Columns)
-		if err != nil {
-			return nil, fmt.Errorf("projecting row: %w", err)
+		var fullRow map[string]any
+		if err := json.Unmarshal(entry.Value(), &fullRow); err != nil {
+			return nil, fmt.Errorf("unmarshaling row: %w", err)
 		}
 
-		// Apply WHERE filter
-		if !filterRow(row, p.Where) {
+		// Apply WHERE filter on full row before projection
+		if !filterRow(fullRow, p.Where) {
 			continue
+		}
+
+		row := fullRow
+		if p.Columns != nil {
+			row = projectRow(fullRow, p.Columns)
 		}
 
 		results = append(results, row)
@@ -81,34 +86,27 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	return results, nil
 }
 
-// projectRow unmarshals a KV entry value and projects it to the requested columns.
-// If columns is nil (SELECT *), all columns are returned.
+// projectRow filters a row to only the requested columns.
+// If columns is nil (SELECT *), the row is returned as-is.
 // Missing columns in the projection are set to nil per D-31.
-func projectRow(data []byte, columns []string) (map[string]any, error) {
-	var row map[string]any
-	if err := json.Unmarshal(data, &row); err != nil {
-		return nil, fmt.Errorf("unmarshaling row: %w", err)
-	}
-
+func projectRow(row map[string]any, columns []string) map[string]any {
 	if columns == nil {
-		return row, nil // SELECT *
+		return row // SELECT *
 	}
 
-	// Filter to only requested columns
 	projected := make(map[string]any, len(columns))
 	for _, col := range columns {
 		if col == "*" {
-			// If column list contains a bare "*", return all
-			return row, nil
+			return row
 		}
 		val, ok := row[col]
 		if ok {
 			projected[col] = val
 		} else {
-			projected[col] = nil // D-31: explicit null for missing
+			projected[col] = nil
 		}
 	}
-	return projected, nil
+	return projected
 }
 
 // filterRow checks whether a row matches all WHERE conditions (AND logic).

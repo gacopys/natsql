@@ -1,0 +1,21 @@
+{
+  "version": "1",
+  "name": "natsql",
+  "type": "collection",
+  "ignore": [],
+  "presets": {
+    "requestType": "http",
+    "requestUrl": "{{base_url}}/api/v1/query"
+  },
+  "environments": [
+    {
+      "name": "local",
+      "variables": [
+        {
+          "name": "base_url",
+          "value": "http://127.0.0.1:8080"
+        }
+      ]
+    }
+  ]
+}

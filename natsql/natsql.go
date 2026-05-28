@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -139,6 +138,10 @@ func (e *Engine) Close() error {
 func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 	return e.Engine.Query(ctx, sql)
 }
+
+// ---------------------------------------------------------------------------
+// QueryResult is the response envelope returned by Engine.Query.
+type QueryResult = query.QueryResult
 
 // ---------------------------------------------------------------------------
 // Options

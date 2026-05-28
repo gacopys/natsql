@@ -43,6 +43,7 @@ type NATSConfig struct {
 	URL      string `yaml:"url,omitempty" json:"url,omitempty"`                // default "nats://localhost:4222"
 	Embedded bool   `yaml:"embedded,omitempty" json:"embedded,omitempty"`      // start embedded NATS
 	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"`    // JetStream store dir
+	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`              // embedded NATS port (0 = random)
 }
 
 // HTTPConfig configures the HTTP query API server.

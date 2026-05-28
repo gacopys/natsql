@@ -1,0 +1,22 @@
+meta {
+  name: Invalid SQL syntax
+  type: http
+  seq: 4
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sql": "SELECTT * FROMM users WHEREE id = 'x'"
+  }
+}

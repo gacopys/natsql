@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 
 	"natsql"
@@ -119,7 +120,31 @@ func runServer(cmd *cobra.Command) error {
 		return fmt.Errorf("creating engine: %w", err)
 	}
 
-	// 5. Startup banner
+	// 5. Create source streams before starting engine
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	js, jserr := jetstream.New(eng.NC())
+	if jserr == nil {
+		seen := map[string]bool{}
+		for _, v := range cfg.Views {
+			if seen[v.SourceStream] {
+				continue
+			}
+			seen[v.SourceStream] = true
+			_, serr := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+				Name:     v.SourceStream,
+				Subjects: []string{v.SourceStream + ".>"},
+			})
+			if serr != nil {
+				logger.Warn("failed to create source stream", "stream", v.SourceStream, "error", serr)
+			} else {
+				logger.Info("created source stream", "stream", v.SourceStream)
+			}
+		}
+	}
+
+	// 6. Startup banner
 	mode := "external"
 	if cfg.NATS.Embedded {
 		mode = "embedded"
@@ -139,10 +164,7 @@ func runServer(cmd *cobra.Command) error {
 		logger.Info("configured view", "name", v.Name, "source_stream", v.SourceStream)
 	}
 
-	// 6. Start engine
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// 7. Start engine
 	if err := eng.Start(ctx); err != nil {
 		return fmt.Errorf("starting engine: %w", err)
 	}

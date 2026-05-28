@@ -1,0 +1,22 @@
+meta {
+  name: Missing sql field
+  type: http
+  seq: 7
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "query": "SELECT * FROM users WHERE id = 'x'"
+  }
+}

@@ -1,0 +1,22 @@
+meta {
+  name: PK lookup (projected columns)
+  type: http
+  seq: 2
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sql": "SELECT name, email FROM users WHERE user_id = 'abc'"
+  }
+}

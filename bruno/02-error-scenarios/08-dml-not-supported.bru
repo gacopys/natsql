@@ -1,0 +1,22 @@
+meta {
+  name: DML not supported
+  type: http
+  seq: 8
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sql": "INSERT INTO users VALUES ('x')"
+  }
+}

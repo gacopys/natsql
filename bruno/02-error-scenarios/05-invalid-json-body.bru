@@ -1,0 +1,20 @@
+meta {
+  name: Invalid JSON body
+  type: http
+  seq: 5
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:text {
+  not valid json at all
+}

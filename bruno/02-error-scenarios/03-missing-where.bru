@@ -1,0 +1,22 @@
+meta {
+  name: Missing WHERE clause
+  type: http
+  seq: 3
+}
+
+http {
+  method: POST
+  url: {{base_url}}/api/v1/query
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sql": "SELECT * FROM users"
+  }
+}
