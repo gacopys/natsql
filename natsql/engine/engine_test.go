@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
+	natsql "natsql"
 	natsqlpkg "natsql/cfg"
 	"natsql/engine"
 	"natsql/kv"
@@ -1025,6 +1027,204 @@ func TestEngineQueryEmptyResult(t *testing.T) {
 	}
 	if len(result.Results) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(result.Results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Facade integration tests — test through the root natsql package constructors
+// ---------------------------------------------------------------------------
+
+// TestEngineFullLifecycleViaFacade tests the complete lifecycle through the
+// natsql.NewWithNATS facade constructor (D-47): create with NATS connection,
+// start, publish, query, stats, close, and verify no goroutine leak (D-59).
+func TestEngineFullLifecycleViaFacade(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_FACADE_LIFECYCLE"
+	createStream(t, ctx, js, streamName)
+
+	cfg := &natsqlpkg.Config{
+		Views: []natsqlpkg.ViewConfig{
+			{
+				Name:         "facade_test",
+				SourceStream: streamName,
+				KeyFields:    []string{"id"},
+				Columns: []natsqlpkg.ColumnConfig{
+					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
+					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
+				},
+				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+			},
+		},
+	}
+
+	baseline := baselineGoroutines()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Use the natsql.NewWithNATS facade
+	eng, err := natsql.NewWithNATS(nc, cfg, natsql.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewWithNATS failed: %v", err)
+	}
+
+	// Start engine
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Verify stats after start
+	stats := eng.Stats()
+	if !stats.Started {
+		t.Error("expected Started=true after Start")
+	}
+	if stats.Views != 1 {
+		t.Errorf("expected Views=1, got %d", stats.Views)
+	}
+	if !stats.HTTPServing {
+		t.Error("expected HTTPServing=true after Start")
+	}
+
+	// Publish an event
+	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "f1", "name": "Facade Test User"}`)); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+	time.Sleep(2 * time.Second) // allow processing
+
+	// Query the materialized view
+	result := eng.Query(ctx, "SELECT * FROM facade_test WHERE id = 'f1'")
+	if result.Error != nil {
+		t.Fatalf("Query returned error: %v", *result.Error)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.Results))
+	}
+	if result.Results[0]["name"] != "Facade Test User" {
+		t.Errorf("name = %v, want %q", result.Results[0]["name"], "Facade Test User")
+	}
+
+	// Close engine
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify stats after close
+	stats = eng.Stats()
+	if stats.Started {
+		t.Error("expected Started=false after Close")
+	}
+	if stats.HTTPServing {
+		t.Error("expected HTTPServing=false after Close")
+	}
+
+	// Verify no goroutine leak — allow margin for NATS infrastructure goroutines
+	time.Sleep(500 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	maxExpected := baseline + 12
+	if after > maxExpected {
+		t.Errorf("goroutine leak: %d goroutines after close, expected <= %d (baseline %d, delta %d)",
+			after, maxExpected, baseline, after-baseline)
+	}
+}
+
+// TestEngineGracefulShutdown verifies that Close() completes within a reasonable
+// timeout and does not hang (T-03-03 mitigation). It also verifies that the
+// engine can process events before shutdown completes.
+func TestEngineGracefulShutdown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_GRACEFUL"
+	createStream(t, ctx, js, streamName)
+
+	cfg := &natsqlpkg.Config{
+		Views: []natsqlpkg.ViewConfig{
+			{
+				Name:         "graceful_test",
+				SourceStream: streamName,
+				KeyFields:    []string{"id"},
+				Columns: []natsqlpkg.ColumnConfig{
+					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
+					{Name: "data", From: "data", Type: natsqlpkg.ColumnTypeString},
+				},
+				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := natsql.NewWithNATS(nc, cfg, natsql.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewWithNATS failed: %v", err)
+	}
+
+	// NOTE: NewWithNATS owns the NATS connection — do NOT defer nc.Close()
+	// because eng.Close() will close it.
+
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Publish several events
+	for i := 0; i < 5; i++ {
+		event := fmt.Sprintf(`{"id": "g%d", "data": "event-%d"}`, i, i)
+		if _, err := js.Publish(ctx, streamName+".events", []byte(event)); err != nil {
+			t.Fatalf("Publish event %d failed: %v", i, err)
+		}
+	}
+
+	// Let events start processing
+	time.Sleep(1 * time.Second)
+
+	// Measure Close duration — must complete within 10s (T-03-03)
+	closeStart := time.Now()
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	closeDur := time.Since(closeStart)
+
+	if closeDur > 10*time.Second {
+		t.Errorf("Close took %v, expected <= 10s", closeDur)
+	}
+
+	t.Logf("Close completed in %v", closeDur)
+
+	// Verify data persistence after close via a separate NATS connection
+	// (the original connection was closed by eng.Close())
+	verifyNC, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("failed to create verification connection: %v", err)
+	}
+	defer verifyNC.Close()
+
+	verifyJS, err := jetstream.New(verifyNC)
+	if err != nil {
+		t.Fatalf("failed to create verification JetStream: %v", err)
+	}
+
+	kvb, err := kv.InitBucket(ctx, verifyJS, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		pk := kv.PkKey("graceful_test", fmt.Sprintf("g%d", i))
+		entry, err := kvb.Get(ctx, pk)
+		if err != nil {
+			t.Fatalf("Get(%q) failed: %v", pk, err)
+		}
+		if entry == nil {
+			t.Errorf("event g%d was not materialized", i)
+		}
 	}
 }
 
