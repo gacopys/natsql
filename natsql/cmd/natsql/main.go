@@ -58,7 +58,7 @@ func main() {
 	}
 
 	// 5. Create engine
-	eng, err := engine.New(js, cfg)
+	eng, err := engine.New(nc, js, cfg)
 	if err != nil {
 		slog.Error("failed to create engine", "error", err)
 		os.Exit(1)

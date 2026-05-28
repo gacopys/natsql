@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,6 +22,7 @@ import (
 	"natsql/kv"
 	"natsql/materialize"
 	"natsql/query"
+	"natsql/transport"
 )
 
 // Sentinel errors for Engine lifecycle operations.
@@ -151,6 +153,34 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Info("started materializer", "view", vc.Name, "source_stream", vc.SourceStream)
 	}
 
+	// 5. Register NATS query handler (if NATS connection is available)
+	if e.nc != nil {
+		sub, err := transport.RegisterNATSHandler(e.nc, e)
+		if err != nil {
+			e.logger.Error("failed to register NATS query handler", "error", err)
+		} else {
+			e.natsSub = sub
+			e.logger.Info("NATS query handler registered", "subject", "natsql.query")
+		}
+	}
+
+	// 6. Start HTTP query server (bound to localhost per T-02-06)
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, e)
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", e.queryPort),
+		Handler: router,
+	}
+	e.httpServer = httpServer
+	e.wg.Add(1)
+	go func(srv *http.Server, logger *slog.Logger) {
+		defer e.wg.Done()
+		logger.Info("HTTP query server starting", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("HTTP server error", "error", err)
+		}
+	}(httpServer, e.logger)
+
 	e.started = true
 	e.logger.Info("engine started", "view_count", len(e.cfg.Views))
 	return nil
@@ -175,7 +205,25 @@ func (e *Engine) Close() error {
 		e.cancel()
 	}
 
-	// Wait for all goroutines to complete
+	// Unsubscribe NATS query handler (prevents new NATS queries)
+	if e.natsSub != nil {
+		if err := e.natsSub.Unsubscribe(); err != nil {
+			e.logger.Warn("error unsubscribing NATS handler", "error", err)
+		}
+		e.natsSub = nil
+	}
+
+	// Shutdown HTTP server (causes HTTP goroutine to exit)
+	if e.httpServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := e.httpServer.Shutdown(shutdownCtx); err != nil {
+			e.logger.Warn("error shutting down HTTP server", "error", err)
+		}
+		e.httpServer = nil
+	}
+
+	// Wait for all goroutines (materializers + HTTP server)
 	e.wg.Wait()
 
 	e.started = false

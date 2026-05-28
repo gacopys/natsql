@@ -4,6 +4,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/nats-io/nats.go"
@@ -20,5 +21,20 @@ type QueryHandler interface {
 // with the JSON query result. The request body is the raw SQL string (D-35).
 // Returns the subscription for lifecycle management.
 func RegisterNATSHandler(nc *nats.Conn, handler QueryHandler) (*nats.Subscription, error) {
-	return nil, fmt.Errorf("not implemented")
+	sub, err := nc.Subscribe("natsql.query", func(msg *nats.Msg) {
+		sql := string(msg.Data)
+		result := handler.Query(context.Background(), sql)
+		data, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			errResp := fmt.Sprintf(`{"results":[],"error":"internal error: %s"}`, marshalErr.Error())
+			msg.Respond([]byte(errResp))
+			return
+		}
+		msg.Respond(data)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("subscribing to natsql.query: %w", err)
+	}
+	nc.Flush()
+	return sub, nil
 }
