@@ -14,7 +14,7 @@ Each phase delivers a complete, testable capability. No phase depends on unbuilt
 
 - [x] **Phase 1: Foundation — Materializer** — Config-driven JetStream consumer materializes events into KV row state
 - [x] **Phase 2: SQL Query Engine + Interfaces** — PK-lookup SQL query engine with NATS request-reply and HTTP endpoints
-- [ ] **Phase 3: Packaging + Deployment** — Go library API, standalone binary, embedded/external NATS, graceful shutdown
+- [x] **Phase 3: Packaging + Deployment** — Go library API, standalone binary, embedded/external NATS, graceful shutdown
 
 ## Phase Details
 
@@ -79,8 +79,8 @@ Plans:
 **Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 03-01-PLAN.md — Embed Package + Engine Extensions + Graceful Shutdown (Wave 1)
-- [ ] 03-02-PLAN.md — Root Facade + Cobra CLI (Wave 2)
+- [x] 03-01-PLAN.md — Embed Package + Engine Extensions + Graceful Shutdown (Wave 1)
+- [x] 03-02-PLAN.md — Root Facade + Cobra CLI (Wave 2)
 
 ## Progress
 
@@ -88,4 +88,4 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Foundation — Materializer | 3/3 | Complete | 2026-05-28 |
 | 2. SQL Query Engine + Interfaces | 2/2 | Complete | 2026-05-28 |
-| 3. Packaging + Deployment | 0/0 | Not started | - |
+| 3. Packaging + Deployment | 2/2 | Complete | 2026-05-28 |
