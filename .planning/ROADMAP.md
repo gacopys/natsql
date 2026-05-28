@@ -13,7 +13,7 @@ Each phase delivers a complete, testable capability. No phase depends on unbuilt
 ## Phases
 
 - [x] **Phase 1: Foundation — Materializer** — Config-driven JetStream consumer materializes events into KV row state
-- [ ] **Phase 2: SQL Query Engine + Interfaces** — PK-lookup SQL query engine with NATS request-reply and HTTP endpoints
+- [x] **Phase 2: SQL Query Engine + Interfaces** — PK-lookup SQL query engine with NATS request-reply and HTTP endpoints
 - [ ] **Phase 3: Packaging + Deployment** — Go library API, standalone binary, embedded/external NATS, graceful shutdown
 
 ## Phase Details
@@ -58,8 +58,8 @@ Plans:
 **Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 02-01-PLAN.md — Query Engine Core (natsql/query/ package with parser, planner, executor) (Wave 1)
-- [ ] 02-02-PLAN.md — Engine Integration + Transport (Engine.Query(), NATS + HTTP handlers) (Wave 2)
+- [x] 02-01-PLAN.md — Query Engine Core (natsql/query/ package with parser, planner, executor) (Wave 1)
+- [x] 02-02-PLAN.md — Engine Integration + Transport (Engine.Query(), NATS + HTTP handlers) (Wave 2)
 
 ### Phase 3: Packaging + Deployment
 
@@ -83,5 +83,5 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation — Materializer | 3/3 | Complete | 2026-05-28 |
-| 2. SQL Query Engine + Interfaces | 0/0 | Not started | - |
+| 2. SQL Query Engine + Interfaces | 2/2 | Complete | 2026-05-28 |
 | 3. Packaging + Deployment | 0/0 | Not started | - |
