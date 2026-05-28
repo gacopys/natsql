@@ -102,42 +102,11 @@ func NewEmbedded(cfgVal *Config, opts ...Option) (*Engine, error) {
 	if cfgVal == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
-	cfgVal.SetDefaults()
-	if err := cfgVal.Validate(); err != nil {
+	eng, err := engine.NewEmbedded(cfgVal, convertOpts(opts...)...)
+	if err != nil {
 		return nil, err
 	}
-
-	// Start embedded NATS
-	storeDir := cfgVal.NATS.StoreDir
-	node, err := embed.StartNode(embed.NodeConfig{
-		StoreDir: storeDir,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("starting embedded NATS: %w", err)
-	}
-
-	// Connect to embedded server
-	nc, err := nats.Connect(node.ClientURL(), nats.Timeout(10*time.Second))
-	if err != nil {
-		node.Shutdown()
-		return nil, fmt.Errorf("connecting to embedded NATS: %w", err)
-	}
-
-	// Create JetStream context
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		node.Shutdown()
-		return nil, fmt.Errorf("creating JetStream context: %w", err)
-	}
-
-	eng, err := engine.New(nc, js, cfgVal, convertOpts(opts...)...)
-	if err != nil {
-		nc.Close()
-		node.Shutdown()
-		return nil, err
-	}
-	return &Engine{Engine: eng, ownedNC: nc, embedNode: node}, nil
+	return &Engine{Engine: eng, ownedNC: eng.NC(), embedNode: eng.EmbedNode()}, nil
 }
 
 // Close gracefully shuts down the engine and owned resources (D-48).

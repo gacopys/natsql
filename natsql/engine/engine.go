@@ -438,6 +438,13 @@ type Stats struct {
 	LastError   string `json:"last_error,omitempty"`
 }
 
+// NC returns the NATS connection used by the engine.
+// Returns nil if the engine was created with New() (caller-owned connection).
+func (e *Engine) NC() *nats.Conn { return e.nc }
+
+// EmbedNode returns the embedded NATS node, or nil if not using embedded NATS.
+func (e *Engine) EmbedNode() *embed.Node { return e.embedNode }
+
 // Stats returns current operational metrics about the engine.
 // Safe to call at any lifecycle phase (before Start, after Close).
 func (e *Engine) Stats() Stats {
