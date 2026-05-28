@@ -11,13 +11,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsqlpkg "natsql"
 	"natsql/kv"
 	"natsql/materialize"
+	"natsql/query"
 )
 
 // Sentinel errors for Engine lifecycle operations.
@@ -29,17 +32,22 @@ var (
 	ErrNotStarted = errors.New("engine not started")
 )
 
-// Engine manages the lifecycle of materialized views.
+// Engine manages the lifecycle of materialized views and provides
+// SQL query capabilities over NATS KV state.
 // Create via New, then call Start to begin processing, and Close to shut down.
 type Engine struct {
-	js      jetstream.JetStream
-	cfg     *natsqlpkg.Config
-	kv      jetstream.KeyValue
-	logger  *slog.Logger
-	wg      sync.WaitGroup
-	cancel  context.CancelFunc
-	started bool
-	mu      sync.Mutex
+	js         jetstream.JetStream
+	nc         *nats.Conn          // NATS connection for subscription
+	cfg        *natsqlpkg.Config
+	kv         jetstream.KeyValue
+	logger     *slog.Logger
+	wg         sync.WaitGroup
+	cancel     context.CancelFunc
+	started    bool
+	mu         sync.Mutex
+	natsSub    *nats.Subscription  // NATS query subscription (for cleanup)
+	httpServer *http.Server        // HTTP query server
+	queryPort  int                 // HTTP server port (default 8080)
 }
 
 // Option configures the Engine.
@@ -54,13 +62,14 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// New creates a new Engine from a JetStream context and configuration.
+// New creates a new Engine from a NATS connection, JetStream context, and configuration.
 // The engine is pre-configured but not started. Call Start to begin processing.
 //
 // The config is validated synchronously. If validation fails, an error is
-// returned. The NATS connection and JetStream context must be live and
-// provided by the caller.
-func New(js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
+// returned. The NATS connection, JetStream context must be live and
+// provided by the caller. The NATS connection is used for subscribing to
+// query subjects in Start().
+func New(nc *nats.Conn, js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
@@ -69,9 +78,11 @@ func New(js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...Option) (*Engine
 	}
 
 	e := &Engine{
-		js:     js,
-		cfg:    cfg,
-		logger: slog.Default(),
+		js:        js,
+		nc:        nc,
+		cfg:       cfg,
+		logger:    slog.Default(),
+		queryPort: 8080,
 	}
 
 	for _, opt := range opts {
@@ -171,4 +182,69 @@ func (e *Engine) Close() error {
 	e.kv = nil
 	e.logger.Info("engine closed")
 	return nil
+}
+
+// Query executes a SQL SELECT query against the materialized state.
+// It parses the SQL, loads the view schema from KV, validates the query,
+// builds an execution plan, and executes it.
+//
+// This method is threadsafe and works before Engine.Start() has been called
+// (it will lazy-initialize the KV bucket if needed).
+//
+// Returns a QueryResult with typed JSON values per D-29/D-30.
+func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
+	// Ensure KV bucket is available (works before Start())
+	kvb := e.kv
+	if kvb == nil {
+		var err error
+		kvb, err = kv.InitBucket(ctx, e.js, 1)
+		if err != nil {
+			errStr := fmt.Sprintf("initializing KV bucket: %v", err)
+			return &query.QueryResult{Error: &errStr}
+		}
+	}
+
+	// Parse SQL
+	q, err := query.Parse(sql)
+	if err != nil {
+		errStr := err.Error()
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	// Load schema from KV (per D-27 — always fresh)
+	schema, err := kv.LoadSchema(ctx, kvb, q.From)
+	if err != nil {
+		errStr := fmt.Sprintf("error loading schema: %v", err)
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+	if schema == nil {
+		errStr := fmt.Sprintf("view %q not found", q.From) // D-42
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	// Validate against schema
+	if err := query.Validate(q, schema); err != nil {
+		errStr := err.Error()
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	// Build execution plan
+	plan, err := query.BuildPlan(q, schema)
+	if err != nil {
+		errStr := err.Error()
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	// Execute plan
+	rows, err := plan.Execute(ctx, kvb)
+	if err != nil {
+		errStr := err.Error()
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	// Return results (normalize nil to empty slice per D-33)
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return &query.QueryResult{Results: rows, Error: nil}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestEngineEndToEnd(t *testing.T) {
 
 	// Create and start engine
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(js, cfg, engine.WithLogger(logger))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestEngineMultipleViews(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(js, cfg, engine.WithLogger(logger))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(js, cfg, engine.WithLogger(logger))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestEngineRestart(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(js, cfg, engine.WithLogger(logger))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -457,7 +458,7 @@ func TestEngineDoubleStart(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(js, cfg, engine.WithLogger(logger))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -492,7 +493,7 @@ func TestEngineCloseWithoutStart(t *testing.T) {
 		},
 	}
 
-	eng, err := engine.New(nil, cfg)
+	eng, err := engine.New(nil, nil, cfg)
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
 	}
@@ -501,6 +502,289 @@ func TestEngineCloseWithoutStart(t *testing.T) {
 		t.Error("expected ErrNotStarted on Close without Start, got nil")
 	} else if err != engine.ErrNotStarted {
 		t.Errorf("expected ErrNotStarted, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Engine.Query() integration tests
+// ---------------------------------------------------------------------------
+
+// setupTestView creates a KV bucket with a test_users schema and 3 rows.
+func setupTestView(t *testing.T, ctx context.Context, js jetstream.JetStream) jetstream.KeyValue {
+	t.Helper()
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Store schema
+	schema := &kv.ViewSchema{
+		Name: "test_users",
+		Columns: []kv.ColumnSchema{
+			{Name: "id", Type: "string", PrimaryKey: true},
+			{Name: "name", Type: "string"},
+			{Name: "age", Type: "number"},
+			{Name: "active", Type: "boolean"},
+		},
+		KeyFields:    []string{"id"},
+		KeySeparator: "|",
+	}
+	if err := kv.StoreSchema(ctx, kvb, schema.Name, schema); err != nil {
+		t.Fatalf("StoreSchema failed: %v", err)
+	}
+
+	// Insert test rows
+	rows := []struct {
+		pk  string
+		val map[string]any
+	}{
+		{"u1", map[string]any{"id": "u1", "name": "Alice", "age": float64(30), "active": true}},
+		{"u2", map[string]any{"id": "u2", "name": "Bob", "age": float64(25), "active": false}},
+		{"u3", map[string]any{"id": "u3", "name": "Charlie", "age": float64(35), "active": true}},
+	}
+
+	for _, row := range rows {
+		data, err := json.Marshal(row.val)
+		if err != nil {
+			t.Fatalf("marshal row failed: %v", err)
+		}
+		key := kv.PkKey(schema.Name, row.pk)
+		if _, err := kvb.Put(ctx, key, data); err != nil {
+			t.Fatalf("Put(%q) failed: %v", key, err)
+		}
+	}
+
+	return kvb
+}
+
+// TestEngineQueryPKLookup verifies a valid PK lookup query returns the correct row.
+func TestEngineQueryPKLookup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	setupTestView(t, ctx, js)
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	result := eng.Query(ctx, "SELECT * FROM test_users WHERE id = 'u1'")
+	if result.Error != nil {
+		t.Fatalf("Query returned error: %v", *result.Error)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.Results))
+	}
+	if result.Results[0]["id"] != "u1" {
+		t.Errorf("id = %v, want %q", result.Results[0]["id"], "u1")
+	}
+	if result.Results[0]["name"] != "Alice" {
+		t.Errorf("name = %v, want %q", result.Results[0]["name"], "Alice")
+	}
+	if result.Results[0]["age"] != float64(30) {
+		t.Errorf("age = %v, want 30", result.Results[0]["age"])
+	}
+}
+
+// TestEngineQueryViewNotFound verifies that querying a non-existent view returns
+// the expected error message per D-42.
+func TestEngineQueryViewNotFound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	// Query against a view that has no schema (empty bucket)
+	result := eng.Query(ctx, "SELECT * FROM nonexistent WHERE id = 'abc'")
+	if result.Error == nil {
+		t.Fatal("expected error for nonexistent view, got nil")
+	}
+	// D-42: error should contain view "nonexistent" not found
+	if *result.Error != `view "nonexistent" not found` {
+		t.Errorf("error = %q, want %q", *result.Error, `view "nonexistent" not found`)
+	}
+}
+
+// TestEngineQueryInvalidSQL verifies that malformed SQL returns a parse error.
+func TestEngineQueryInvalidSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	result := eng.Query(ctx, "SELECT * FROM")
+	if result.Error == nil {
+		t.Fatal("expected error for invalid SQL, got nil")
+	}
+	if *result.Error == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+// TestEngineQueryUnknownColumn verifies that a query referencing a non-existent
+// column returns the expected error per D-43.
+func TestEngineQueryUnknownColumn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	setupTestView(t, ctx, js)
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	// SELECT with non-existent column
+	result := eng.Query(ctx, "SELECT nonexistent_col FROM test_users WHERE id = 'u1'")
+	if result.Error == nil {
+		t.Fatal("expected error for unknown column, got nil")
+	}
+	if *result.Error == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+// TestEngineQueryConcurrent verifies that Query() is threadsafe.
+func TestEngineQueryConcurrent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	setupTestView(t, ctx, js)
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result := eng.Query(ctx, "SELECT * FROM test_users WHERE id = 'u1'")
+			if result.Error != nil {
+				t.Errorf("concurrent query error: %v", *result.Error)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestEngineQueryBeforeStart verifies that Query works before Start() is called.
+func TestEngineQueryBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	// Set up KV data directly (not via engine)
+	setupTestView(t, ctx, js)
+
+	// Create engine but DON'T start it
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	// Query should work before Start
+	result := eng.Query(ctx, "SELECT * FROM test_users WHERE id = 'u1'")
+	if result.Error != nil {
+		t.Fatalf("Query before Start failed: %v", *result.Error)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.Results))
+	}
+	if result.Results[0]["id"] != "u1" {
+		t.Errorf("id = %v, want %q", result.Results[0]["id"], "u1")
+	}
+}
+
+// TestEngineQueryFullScan verifies that non-PK WHERE queries use full scan
+// and return correct results.
+func TestEngineQueryFullScan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	setupTestView(t, ctx, js)
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	// Query by non-PK column (name) — forces full scan
+	result := eng.Query(ctx, "SELECT * FROM test_users WHERE name = 'Alice'")
+	if result.Error != nil {
+		t.Fatalf("Query returned error: %v", *result.Error)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result for name='Alice', got %d", len(result.Results))
+	}
+	if result.Results[0]["name"] != "Alice" {
+		t.Errorf("name = %v, want %q", result.Results[0]["name"], "Alice")
+	}
+}
+
+// TestEngineQueryEmptyResult verifies that a query returning no rows
+// returns an empty results array, not null (D-33).
+func TestEngineQueryEmptyResult(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	setupTestView(t, ctx, js)
+
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	// Query with non-existent PK value
+	result := eng.Query(ctx, "SELECT * FROM test_users WHERE id = 'nonexistent'")
+	if result.Error != nil {
+		t.Fatalf("Query returned error: %v", *result.Error)
+	}
+	if result.Results == nil {
+		t.Fatal("expected empty results slice, got nil (D-33)")
+	}
+	if len(result.Results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(result.Results))
 	}
 }
 
