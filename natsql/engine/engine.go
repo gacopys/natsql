@@ -244,9 +244,12 @@ func (e *Engine) Start(ctx context.Context) error {
 	// 3. Create context for lifecycle management
 	ctx, e.cancel = context.WithCancel(ctx)
 
-	// 4. Store schemas and launch materializers
+	// 4. Create drain channels and launch materializers
+	e.drainChans = make([]chan struct{}, len(e.cfg.Views))
 	for i := range e.cfg.Views {
 		vc := e.cfg.Views[i] // copy to avoid loop variable capture
+		drainCh := make(chan struct{})
+		e.drainChans[i] = drainCh
 
 		// Store schema in KV (non-fatal if it fails)
 		schema := vc.BuildSchema()
@@ -254,16 +257,16 @@ func (e *Engine) Start(ctx context.Context) error {
 			e.logger.Warn("failed to store schema in KV", "view", vc.Name, "error", storeErr)
 		}
 
-		// Launch materializer goroutine
+		// Launch materializer goroutine with drain channel
 		e.wg.Add(1)
-		go func(viewCfg natsqlpkg.ViewConfig) {
+		go func(viewCfg natsqlpkg.ViewConfig, dc chan struct{}) {
 			defer e.wg.Done()
-			if runErr := materialize.Run(ctx, e.js, &viewCfg, e.kv, dlqStream, e.logger); runErr != nil {
+			if runErr := materialize.Run(ctx, e.js, &viewCfg, e.kv, dlqStream, e.logger, dc); runErr != nil {
 				if !errors.Is(runErr, context.Canceled) {
 					e.logger.Error("materializer exited with error", "view", viewCfg.Name, "error", runErr)
 				}
 			}
-		}(vc)
+		}(vc, drainCh)
 
 		e.logger.Info("started materializer", "view", vc.Name, "source_stream", vc.SourceStream)
 	}
@@ -301,10 +304,12 @@ func (e *Engine) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close gracefully shuts down the engine.
-// It cancels the materializer contexts, waits for all materializer goroutines
-// to exit, then resets internal state. After Close, Start can be called again
-// to restart.
+// Close gracefully shuts down the engine following D-57 ordering:
+//  1. Stop HTTP server (5s timeout for in-flight requests)
+//  2. Unsubscribe NATS query handler (prevents new query requests)
+//  3. Signal drain to all materializer consumers (cons.Drain())
+//  4. Cancel materializer context (signals remaining goroutines)
+//  5. Wait for all goroutines via WaitGroup
 //
 // Returns ErrNotStarted if the engine has not been started.
 func (e *Engine) Close() error {
@@ -315,31 +320,43 @@ func (e *Engine) Close() error {
 		return ErrNotStarted
 	}
 
-	// Signal all materializers to stop
-	if e.cancel != nil {
-		e.cancel()
+	// D-57 Step 1: Stop HTTP server (5s timeout for in-flight requests)
+	if e.httpServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := e.httpServer.Shutdown(shutdownCtx); err != nil {
+			e.logger.Warn("HTTP server shutdown error", "error", err)
+		}
+		shutdownCancel()
+		e.httpServer = nil
 	}
 
-	// Unsubscribe NATS query handler (prevents new NATS queries)
+	// D-57 Step 2: Unsubscribe NATS query handler (prevents new query requests)
 	if e.natsSub != nil {
 		if err := e.natsSub.Unsubscribe(); err != nil {
-			e.logger.Warn("error unsubscribing NATS handler", "error", err)
+			e.logger.Warn("NATS unsubscribe error", "error", err)
 		}
 		e.natsSub = nil
 	}
 
-	// Shutdown HTTP server (causes HTTP goroutine to exit)
-	if e.httpServer != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if err := e.httpServer.Shutdown(shutdownCtx); err != nil {
-			e.logger.Warn("error shutting down HTTP server", "error", err)
-		}
-		e.httpServer = nil
+	// D-57 Step 3: Signal drain to all materializer consumers
+	// This triggers cons.Drain() in each materializer before context cancel,
+	// preventing unnecessary redeliveries on restart (D-58).
+	for _, ch := range e.drainChans {
+		close(ch)
+	}
+	e.drainChans = nil
+
+	// D-57 Step 4: Cancel materializer context
+	if e.cancel != nil {
+		e.cancel()
 	}
 
-	// Wait for all goroutines (materializers + HTTP server)
+	// D-57 Step 5: Wait for all goroutines (materializers + HTTP monitor)
 	e.wg.Wait()
+
+	// Note: Embedded NATS lifecycle is owned by NewEmbedded and closed
+	// separately if needed. The engine package does not own embedded NATS
+	// lifecycle — the facade (natsql package) manages that.
 
 	e.started = false
 	e.kv = nil

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -673,8 +674,79 @@ func TestEngineStats(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Engine.Query() integration tests
+// TestEngineGoroutineLeak verifies that after the full engine lifecycle
+// (Start → process → Close), no goroutines are leaked (D-59).
+func TestEngineGoroutineLeak(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_ENG_LEAK"
+	createStream(t, ctx, js, streamName)
+
+	cfg := &natsqlpkg.Config{
+		Views: []natsqlpkg.ViewConfig{
+			{
+				Name:         "leak_test",
+				SourceStream: streamName,
+				KeyFields:    []string{"id"},
+				Columns: []natsqlpkg.ColumnConfig{
+					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
+					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
+				},
+				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+			},
+		},
+	}
+
+	baseline := baselineGoroutines()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Publish an event so the materializer processes something
+	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "l1", "name": "Leak Test"}`)); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	time.Sleep(2 * time.Second) // allow processing
+
+	// Close engine
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Wait for goroutines to settle
+	time.Sleep(1 * time.Second)
+
+	// Check goroutine count — allow margin for NATS connection/internal goroutines
+	// that persist beyond engine lifecycle (the nc connection is owned by the test,
+	// not by the engine, and its internal goroutines remain after engine.Close()).
+	after := runtime.NumGoroutine()
+	maxExpected := baseline + 12
+	if after > maxExpected {
+		t.Errorf("goroutine leak: %d goroutines after close, expected <= %d (baseline %d, delta %d)",
+			after, maxExpected, baseline, after-baseline)
+	}
+}
+
+// baselineGoroutines returns current goroutine count, excluding transient
+// goroutines that may be in the process of exiting.
+func baselineGoroutines() int {
+	time.Sleep(100 * time.Millisecond)
+	return runtime.NumGoroutine()
+}
+
 // ---------------------------------------------------------------------------
 
 // setupTestView creates a KV bucket with a test_users schema and 3 rows.

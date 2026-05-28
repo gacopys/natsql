@@ -70,7 +70,8 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 	}
 }
 
-// Run starts the materializer for a single view. It blocks until the context is cancelled.
+// Run starts the materializer for a single view. It blocks until the context is cancelled
+// or a drain signal is received via drainCh.
 //
 // The processing loop:
 //  1. Sets up a durable consumer from the source stream
@@ -80,12 +81,16 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 //  5. Processes events: consume → map → write → ack
 //  6. Logs a periodic heartbeat
 //
+// When drainCh is signaled (closed or receives a value), the consumer is drained
+// via cons.Drain() before exiting (D-58). This prevents unnecessary redeliveries
+// on restart by allowing in-flight messages to be acknowledged.
+//
 // Error handling per ARCHITECTURE.md §2.6 and D-14:
 //   - Malformed events (ErrMalformedEvent): published to DLQ, acked, continue
 //   - KV write failures: original published to DLQ, acked, continue
 //   - Context cancelled: return immediately
 //   - Consumer errors: logged, continue
-func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, dlqStream jetstream.Stream, logger *slog.Logger) error {
+func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, dlqStream jetstream.Stream, logger *slog.Logger, drainCh <-chan struct{}) error {
 	// 1. Create durable consumer
 	cons, err := SetupConsumer(ctx, js, viewCfg.SourceStream, viewCfg.Name, viewCfg.SourceSubject, viewCfg.Consumer)
 	if err != nil {
@@ -114,15 +119,35 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 		return fmt.Errorf("getting messages context for view %q: %w", viewCfg.Name, err)
 	}
 
+	// D-58: Use a child context for the fetch loop so we can unblock
+	// NextContext independently of the main ctx (for drain support).
+	fetchCtx, fetchCancel := context.WithCancel(ctx)
+
 	// Bridge goroutine: MessagesContext.Next() → channel for select-based loop
+	// Uses fetchCtx so that drain can cancel it without affecting the main ctx.
 	msgCh := make(chan jetstream.Msg, 64)
 	go func() {
 		defer close(msgCh)
+		defer fetchCancel()
 		for {
-			msg, nextErr := msgCtx.Next(jetstream.NextContext(ctx))
+			msg, nextErr := msgCtx.Next(jetstream.NextContext(fetchCtx))
 			if nextErr != nil {
+				// If the main context is done, it's a normal shutdown
 				if ctx.Err() != nil {
-					return // context cancelled, stop goroutine
+					return
+				}
+				// If fetchCtx is cancelled but main ctx is alive, drain was requested
+				if errors.Is(nextErr, context.Canceled) {
+					select {
+					case <-drainCh:
+						// Drain requested: drain the MessagesContext (D-58)
+						// This allows in-flight messages to be acked before exit,
+						// preventing unnecessary redeliveries on restart.
+						msgCtx.Drain()
+					default:
+						// Main context still alive, unexpected cancellation
+					}
+					return
 				}
 				if errors.Is(nextErr, jetstream.ErrMsgIteratorClosed) {
 					return // iterator closed normally
@@ -133,11 +158,24 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 			}
 			select {
 			case msgCh <- msg:
-			case <-ctx.Done():
+			case <-fetchCtx.Done():
 				return
 			}
 		}
 	}()
+
+	// Monitor goroutine: listens for drain signal and cancels the fetch context
+	// to unblock the bridge goroutine's NextContext call.
+	if drainCh != nil {
+		go func() {
+			select {
+			case <-drainCh:
+				fetchCancel()
+			case <-ctx.Done():
+				fetchCancel()
+			}
+		}()
+	}
 
 	// 6. Start heartbeat ticker (every 60 seconds)
 	heartbeat := time.NewTicker(60 * time.Second)

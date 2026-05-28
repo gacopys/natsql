@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"natsql"
@@ -61,7 +60,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -160,7 +159,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -258,7 +257,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -342,7 +341,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow setup
@@ -398,7 +397,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow setup to store schema
@@ -495,7 +494,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger)
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond)
@@ -539,5 +538,66 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	case <-errCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("materializer did not shut down within 5 seconds")
+	}
+}
+
+// TestMaterializerDrain verifies that signaling the drain channel causes
+// the materializer to exit gracefully (D-58).
+func TestMaterializerDrain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_MAT_DRAIN"
+	createStream(t, ctx, js, streamName)
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	dlqStream, err := EnsureDLQStream(ctx, js)
+	if err != nil {
+		t.Fatalf("EnsureDLQStream failed: %v", err)
+	}
+
+	viewCfg := &natsql.ViewConfig{
+		Name:         "drain_test",
+		SourceStream: streamName,
+		KeyFields:    []string{"id"},
+		Columns: []natsql.ColumnConfig{
+			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
+		},
+		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	drainCh := make(chan struct{})
+	errCh := make(chan error, 1)
+
+	matCtx, matCancel := context.WithCancel(context.Background())
+	defer matCancel()
+
+	go func() {
+		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, drainCh)
+	}()
+
+	time.Sleep(500 * time.Millisecond) // allow consumer setup
+
+	// Signal drain
+	close(drainCh)
+
+	// Wait for Run() to return
+	select {
+	case runErr := <-errCh:
+		// Should return without error (nil) or context.Canceled
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			t.Errorf("unexpected error on drain: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("materializer did not exit within 5 seconds after drain")
 	}
 }
