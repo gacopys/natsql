@@ -45,24 +45,12 @@ type PKLookupPlan struct {
 	Columns  []string // nil = all
 }
 
-// Execute performs a direct PK lookup using kv.Get().
-func (p *PKLookupPlan) Execute(ctx context.Context, kv jetstream.KeyValue) ([]map[string]any, error) {
-	// Implemented in executor.go
-	panic("stub — implemented in Task 2")
-}
-
 // FullScanPlan iterates all keys for a view, applies filters client-side.
 type FullScanPlan struct {
 	ViewName string
 	Columns  []string // nil = all
 	Where    []Condition
 	Limit    int
-}
-
-// Execute performs a full scan using kv.ListKeys() with client-side filtering.
-func (p *FullScanPlan) Execute(ctx context.Context, kv jetstream.KeyValue) ([]map[string]any, error) {
-	// Implemented in executor.go
-	panic("stub — implemented in Task 2")
 }
 
 // QueryResult is the JSON response envelope per D-29.
