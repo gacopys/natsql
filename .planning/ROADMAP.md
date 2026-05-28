@@ -76,7 +76,11 @@ Plans:
   4. Graceful shutdown sequence works — `SIGINT`/`SIGTERM` drains the materializer consumer, flushes pending KV writes, stops the HTTP server, and exits cleanly
   5. No leaked goroutines, orphaned consumers, or unclosed NATS connections after shutdown (verifiable via goroutine profile and NATS server `nsc list consumers`)
 
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
+
+Plans:
+- [ ] 03-01-PLAN.md — Embed Package + Engine Extensions + Graceful Shutdown (Wave 1)
+- [ ] 03-02-PLAN.md — Root Facade + Cobra CLI (Wave 2)
 
 ## Progress
 
