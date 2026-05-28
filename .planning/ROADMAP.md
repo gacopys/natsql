@@ -49,13 +49,17 @@ Plans:
 **Requirements**: QRY-01, QRY-02, QRY-03, IFC-01, IFC-02
 
 **Success Criteria** (what must be TRUE):
-  1. User can query a single row by primary key: `SELECT * FROM view WHERE <pk_col> = <val>` returns the correct row as typed JSON
-  2. Query engine validates column names against the view schema — invalid columns return a clear error, not a panic
-  3. Query results are returned as typed JSON (strings quoted, numbers unquoted, booleans literal, null for missing values)
-  4. User can query via NATS request-reply — `nc.Request("natsql.query", sqlBytes)` returns JSON response with results or error
-  5. User can query via HTTP — `POST /api/v1/query` with JSON body `{"sql": "..."}` or `GET /query?sql=...` returns JSON response
+   1. User can query a single row by primary key: `SELECT * FROM view WHERE <pk_col> = <val>` returns the correct row as typed JSON
+   2. Query engine validates column names against the view schema — invalid columns return a clear error, not a panic
+   3. Query results are returned as typed JSON (strings quoted, numbers unquoted, booleans literal, null for missing values)
+   4. User can query via NATS request-reply — `nc.Request("natsql.query", sqlBytes)` returns JSON response with results or error
+   5. User can query via HTTP — `POST /api/v1/query` with JSON body `{"sql": "..."}` returns JSON response
 
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
+
+Plans:
+- [ ] 02-01-PLAN.md — Query Engine Core (natsql/query/ package with parser, planner, executor) (Wave 1)
+- [ ] 02-02-PLAN.md — Engine Integration + Transport (Engine.Query(), NATS + HTTP handlers) (Wave 2)
 
 ### Phase 3: Packaging + Deployment
 
