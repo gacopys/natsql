@@ -65,29 +65,18 @@ Config-driven JetStream consumer that materializes events from a stream into a N
 - `.planning/research/ARCHITECTURE.md` — Deep architecture analysis
 - `.planning/research/PITFALLS.md` — Known pitfalls and edge cases
 
-### Reference implementation (ebind)
-- `ebind/stream/setup.go` — JetStream stream creation patterns, consumer config conventions
-- `ebind/embed/node.go` — Embedded NATS server startup pattern
-- `ebind/internal/` — KV key schema patterns, durable consumer lifecycle management
-
 </canonical_refs>
 
 <code_context>
 ## Existing Code Insights
 
-### Reusable Assets
-- `ebind/stream/setup.go` — `EnsureStreams` pattern (idempotent stream creation) can be adapted for natsql stream/DLQ setup
-- `ebind/embed/node.go` — `StartNode`/`StartCluster` patterns for embedded NATS (needed in Phase 3)
-- `ebind/embed/cluster_test.go` — Test harness for in-process NATS integration tests
-
 ### Established Patterns
-- NATS KV key prefix conventions from ebind (`<dag_id>/meta`, `<dag_id>/step/<step_id>`)
 - Consumer lifecycle: `defer cc.Stop(); <-cc.Closed()` for clean goroutine management
 - CAS-based state mutations with retry on revision mismatch
 - JetStream consumer durable naming conventions
 
 ### Integration Points
-- All Phase 1 code lives in a new `natsql/` package (separate from `ebind/`)
+- All Phase 1 code lives in a new `natsql/` package
 - KV bucket `natsql-views` is the integration seam with Phase 2 (query engine reads from it)
 - Schema stored at `schemas:{view_name}` is the contract between materializer and query engine
 

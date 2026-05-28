@@ -130,7 +130,7 @@ Mistakes that cause rewrites or major issues.
 - Wrap the consume callback in a recovery middleware that catches panics and ack/nak appropriately
 
 ```go
-// Correct shutdown pattern (from ebind worker):
+// Correct shutdown pattern:
 cons, _ := stream.CreateOrUpdateConsumer(ctx, jstream.ConsumerConfig{...})
 cc, _ := cons.Consume(func(msg jetstream.Msg) {
     // handle message
@@ -508,7 +508,7 @@ Phase 5 (Snapshots) — snapshot-based recovery.
 - With non-idempotent processing (see Pitfall 3), this corrupts the materialized state
 - In-flight work is silently dropped (messages are neither acked nor nacked)
 
-**Prevention (from ebind's proven pattern in worker.go):**
+**Prevention (proven shutdown pattern):**
 
 ```go
 // Correct shutdown sequence:
@@ -675,7 +675,7 @@ If events carry wall-clock timestamps from different producers, clock skew cause
 | Phase 1: Schema Design | Key encoding | Pitfall 6 (key limits) | Hash/encode PKs |
 | Phase 1: Schema Design | Schema immutability | Pitfall 9 (evolution) | Version stamp, rebuild command |
 | Phase 2: Core Materializer | Consumer config | Pitfall 4 (zombie consumers) | InactiveThreshold, proper stop |
-| Phase 2: Core Materializer | Shutdown | Pitfall 15 (ack race) | ebind shutdown pattern |
+| Phase 2: Core Materializer | Shutdown | Pitfall 15 (ack race) | Proper shutdown pattern |
 | Phase 2: Core Materializer | Event ordering | Pitfall 3, 13 (replay/late) | Sequence tracking, idempotent |
 | Phase 2: Core Materializer | Warmup | Pitfall 14 (full replay) | Checkpoint + snapshot strategy |
 | Phase 3: Index Writer | CAS races | Pitfall 2 (index-data mismatch) | Consistent write strategy |
@@ -697,9 +697,7 @@ If events carry wall-clock timestamps from different producers, clock skew cause
 - [NATS Stream Configuration](https://docs.nats.io/nats-concepts/jetstream/streams) — HIGH confidence
 - [nats.go kv.go source](https://github.com/nats-io/nats.go/blob/main/jetstream/kv.go) — HIGH confidence (valid key regex, KeyValueMaxHistory=64, Keys() returns []string)
 - [nats.go issues: KV keys bugs](https://github.com/nats-io/nats.go/issues?q=is%3Aissue+kv+keys) — MEDIUM confidence (ListKeysFiltered returns deleted keys, KV watcher fails on large buckets, Watch blocks forever)
-- [ebind worker.go](https://github.com/f1bonacc1/ebind/blob/main/worker/worker.go) — HIGH confidence (shutdown pattern reference)
-- [ebind CLAUDE.md](https://github.com/f1bonacc1/ebind/blob/main/CLAUDE.md) — HIGH confidence (CAS patterns, consumer lifecycle, dedupe window)
-- [ebind scheduler.go](https://github.com/f1bonacc1/ebind/blob/main/workflow/scheduler.go) — HIGH confidence (CAS retry, sweep pattern)
+
 - JetStream Model Deep Dive — HIGH confidence (ack types, consumer state)
 - SQL standard (NULL handling, type coercion) — HIGH confidence (language standard)
 - KSQL operational experience — MEDIUM confidence (general stream processing wisdom)

@@ -15,7 +15,7 @@ The recommended architecture cleanly separates three concerns — **Materializer
 1. **NATS KV `Keys()` is O(n) with no server-side filtering** — every full table scan loads ALL keys. Solution: enforce index-only query paths; error on unindexed queries rather than falling back to full scan.
 2. **CAS race between PK write and index update** — crash mid-write leaves index pointing to stale data. Solution: write-then-ack ordering; accept read-committed consistency for v1; add consistency sweep in v2.
 3. **Write amplification from secondary indexes** — each index doubles KV writes (×Raft replicas). Solution: limit indexes per view (max 5); benchmark the curve; document the cost.
-4. **Consumer lifecycle management** — zombie consumers leak goroutines and NATS server resources. Solution: `InactiveThreshold`, `defer cc.Stop(); <-cc.Closed()` pattern from ebind.
+4. **Consumer lifecycle management** — zombie consumers leak goroutines and NATS server resources. Solution: `InactiveThreshold`, `defer cc.Stop(); <-cc.Closed()` pattern.
 
 ## Key Findings
 
@@ -25,7 +25,7 @@ The stack is minimal by design — five direct dependencies, no database drivers
 
 | Technology | Purpose | Rationale |
 |------------|---------|-----------|
-| **Go 1.22+** | Language | Already in monorepo (ebind uses Go 1.26) |
+| **Go 1.22+** | Language | Already in monorepo |
 | **vitess.io/vitess/go/vt/sqlparser** | SQL parsing (SELECT-only AST) | Most battle-tested Go SQL parser; clean AST for SELECT with WHERE/LIMIT extraction |
 | **github.com/nats-io/nats.go/jetstream** | JetStream KV + Stream API | Official simplified client; replaces legacy `nats` package |
 | **github.com/nats-io/nats-server/v2** | Embedded NATS | Single-binary deployment; integration test harness |
@@ -127,7 +127,7 @@ Config (YAML/JSON)
 
 3. **Write amplification from secondary indexes.** Each index = N+1 KV writes (1 data + N indexes). With R3 replication, that's 3×(N+1) Raft writes across the NATS cluster. **Prevention:** Limit indexes to 5 per view. Benchmark the throughput curve. Document "each index doubles write cost" for users. Consider batch flushing in future.
 
-4. **Consumer lifecycle — goroutine leaks and zombie consumers.** Never calling `Stop()` on `ConsumeContext` leaks goroutines; durable consumers without `InactiveThreshold` accumulate on the server. **Prevention:** Always `defer cc.Stop(); <-cc.Closed()`. Set `InactiveThreshold: 1h`. Use `CreateOrUpdateConsumer` (NATS 2.11+). Follow ebind's shutdown pattern.
+4. **Consumer lifecycle — goroutine leaks and zombie consumers.** Never calling `Stop()` on `ConsumeContext` leaks goroutines; durable consumers without `InactiveThreshold` accumulate on the server. **Prevention:** Always `defer cc.Stop(); <-cc.Closed()`. Set `InactiveThreshold: 1h`. Use `CreateOrUpdateConsumer` (NATS 2.11+). Follow established shutdown patterns.
 
 5. **SQL NULL handling and type coercion.** `NULL = NULL` is false in standard SQL but naive implementations get this wrong. Reserved words as column names break parsing. **Prevention:** Define explicit type system from day 1 (string, int64, float64, bool, timestamp). No type inference from events. Document NULL-handling semantics. Support quoted identifiers. Build a SQL compliance test suite covering NULL, type coercion, reserved words, and edge cases.
 
@@ -146,7 +146,7 @@ Based on combined research, I recommend **5 phases** with strict dependency orde
 - Manual integration test: publish event → verify KV state
 **Addresses FEATURES:** Declarative view config, ordered stream consumption, KV materialization, crash recovery
 **Avoids PITFALLS:** Pitfall 6 (key encoding design), Pitfall 7 (history=1 config), Pitfall 19 (key length limits)
-**Research flag:** Low complexity — well-documented NATS KV + ebind reference patterns. Skip /gsd-research-phase.
+**Research flag:** Low complexity — well-documented NATS KV patterns. Skip /gsd-research-phase.
 
 ### Phase 2: Minimal SQL — PK Lookup + NATS Request-Reply
 **Rationale:** Depends on Phase 1 state being available in KV. This is the first user-visible query capability — prove `SELECT ... WHERE pk = val` works before adding index complexity.
@@ -185,7 +185,7 @@ Based on combined research, I recommend **5 phases** with strict dependency orde
 - Graceful shutdown with two-phase drain (stop accepting → drain in-flight → exit)
 - Cobra CLI with root command + subcommands
 **Addresses EMBED-01** (Go library), **EMBED-02** (standalone server), **EMBED-03** (embedded NATS)
-**Avoids PITFALLS:** Pitfall 4 (consumer lifecycle — proper shutdown), Pitfall 15 (ack race — ebind pattern), Pitfall 17 (auth — bind HTTP to localhost by default; document access control for embed mode)
+**Avoids PITFALLS:** Pitfall 4 (consumer lifecycle — proper shutdown), Pitfall 15 (ack race), Pitfall 17 (auth — bind HTTP to localhost by default; document access control for embed mode)
 **Research flag:** Low — standard Go library packaging. Skip /gsd-research-phase.
 
 ### Phase 5: Operational Hardening
@@ -231,10 +231,10 @@ Based on combined research, I recommend **5 phases** with strict dependency orde
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | **HIGH** | All technologies verified against official docs and GitHub. ebind go.mod confirms versions. PATENTED patterns (parse→plan→execute) proven by Badger/Tigris. |
+| Stack | **HIGH** | All technologies verified against official docs and GitHub. PATENTED patterns (parse→plan→execute) proven by Badger/Tigris. |
 | Features | **MEDIUM-HIGH** | Ecosystem research covered 5 comparable systems at depth. Feature claims verified against official docs (but Dgraph docs partially unavailable). ksqlDB/Materialize/Kafka Streams patterns directly inform natsql's design. |
-| Architecture | **HIGH** | 3-component model confirmed against NATS JetStream docs, ebind codebase (CAS patterns, consumer lifecycle, KV key hierarchy), and go-mysql-server query pipeline. |
-| Pitfalls | **HIGH** | Verified against NATS docs, nats.go issue tracker (KV bugs, ListKeysFiltered issues), ebind source code (shutdown patterns, consumer lifecycle), and NATS community experience. |
+| Architecture | **HIGH** | 3-component model confirmed against NATS JetStream docs and go-mysql-server query pipeline. |
+| Pitfalls | **HIGH** | Verified against NATS docs, nats.go issue tracker (KV bugs, ListKeysFiltered issues), and NATS community experience. |
 
 **Overall confidence:** HIGH — all four research dimensions consistently point to the same technology choices, architecture, and phase ordering. The few tensions (hand-written vs vitess parser; single vs per-view KV buckets) are low-risk decisions that can be resolved during Phase 1/2 planning.
 
@@ -255,8 +255,7 @@ Based on combined research, I recommend **5 phases** with strict dependency orde
 - [NATS Consumer Configuration](https://docs.nats.io/nats-concepts/jetstream/consumers) — durable consumer lifecycle, ack policies
 - [nats.go jetstream](https://pkg.go.dev/github.com/nats-io/nats.go/jetstream) — KV operations, consumer API, Watch patterns
 - [vitess sqlparser](https://github.com/vitessio/vitess/tree/main/go/vt/sqlparser) — SQL SELECT AST parsing
-- [ebind worker.go](https://github.com/f1bonacc1/ebind/blob/main/worker/worker.go) — consumer shutdown pattern, CAS retry
-- [ebind scheduler.go](https://github.com/f1bonacc1/ebind/blob/main/workflow/scheduler.go) — state machine + sweep pattern
+
 - [chi v5](https://github.com/go-chi/chi) — HTTP router, v5.3.0 released May 2026
 - [ksqlDB pull queries](https://docs.ksqldb.io/en/latest/developer-guide/ksqldb-reference/select-pull-query/) — feature reference for comparable system
 - [rqlite API](https://rqlite.io/docs/api/api/) — HTTP query API pattern reference

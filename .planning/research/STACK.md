@@ -9,7 +9,7 @@
 ### Core Framework
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| Go | 1.22+ | Language | Constraint from PROJECT.md. ebind already uses 1.26. |
+| Go | 1.22+ | Language | Constraint from PROJECT.md. |
 | `vitess.io/vitess/go/vt/sqlparser` | latest | SQL parsing (SELECT-only AST) | Most battle-tested SQL parser in Go. Handles all edge cases for MySQL dialect. Clean AST for SELECT statements with WHERE clause extraction. |
 | `github.com/nats-io/nats.go/jetstream` | v1.51+ | JetStream KV + Stream API | The official simplified JetStream client. Replaced the legacy `nats` package API. Required for KV bucket ops, stream consumption, CAS. |
 | `github.com/nats-io/nats-server/v2` | v2.14+ | Embedded NATS server | Required for single-binary deployment (EMBED-02, EMBED-03). Enables no-external-dependency mode. |
@@ -28,7 +28,7 @@
 ### CLI
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| `github.com/spf13/cobra` | v1.10+ | CLI framework | Already in the monorepo (used by ebind). Standard — powers Kubernetes, Hugo, GitHub CLI, NATS CLI itself. |
+| `github.com/spf13/cobra` | v1.10+ | CLI framework | Already in the monorepo. Standard — powers Kubernetes, Hugo, GitHub CLI, NATS CLI itself. |
 
 ### Config
 | Technology | Version | Purpose | Why |
@@ -39,7 +39,7 @@
 ### Testing
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| `github.com/nats-io/nats-server/v2` | v2.14+ | Test harness NATS | Already in ebind. Use `embed.StartNode` for integration tests. |
+| `github.com/nats-io/nats-server/v2` | v2.14+ | Test harness NATS | Use `embed.StartNode` for integration tests. |
 | `testing` + `net/http/httptest` | stdlib | HTTP test harness | Use with chi — serves HTTP handler directly, no server process needed. |
 
 ---
@@ -197,7 +197,7 @@ natsql view list      # List active materialized views
 natsql view status    # Show view materialization status
 ```
 
-Cobra already in the monorepo (ebind uses v1.10.2). The `nats` CLI itself uses cobra — this is the established pattern in the NATS ecosystem.
+Cobra already in the monorepo. The `nats` CLI itself uses cobra — this is the established pattern in the NATS ecosystem.
 
 ---
 
@@ -250,7 +250,7 @@ require (
 
 ## Go Version Strategy
 
-PROJECT.md says Go 1.22+. The ebind module already uses Go 1.26. For consistency and to avoid toolchain conflicts in the monorepo, **target Go 1.22+** but be aware that `go 1.26` is already in use nearby. Use generics where appropriate (Go 1.18+), but the minimal SQL engine doesn't need them.
+PROJECT.md says Go 1.22+. For consistency and to avoid toolchain conflicts in the monorepo, **target Go 1.22+**. Use generics where appropriate (Go 1.18+), but the minimal SQL engine doesn't need them.
 
 ---
 
@@ -280,4 +280,4 @@ PROJECT.md says Go 1.22+. The ebind module already uses Go 1.26. For consistency
 | xwb1989/sqlparser | https://github.com/xwb1989/sqlparser | MEDIUM (archived/unmaintained) |
 | pingcap/tidb/parser | https://github.com/pingcap/tidb/tree/master/pkg/parser | HIGH (actively maintained) |
 | rqlite architecture | https://github.com/rqlite/rqlite | MEDIUM (reference for query patterns) |
-| ebind go.mod | `/home/pawel/repo/natsdb/ebind/go.mod` | HIGH (existing monorepo versions) |
+

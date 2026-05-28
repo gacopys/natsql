@@ -40,13 +40,13 @@ A developer can define a materialized view from a stream, publish events, and qu
 - Aggregations (GROUP BY, COUNT, AVG) in v1 — deferred
 - Subqueries, window functions, CTEs
 - Schema migration / ALTER VIEW with backfill — requires full re-materialize
-- ebind integration — independent project (ebind is reference inspiration only)
+- External project integration — each project maintains independence
 
 ## Context
 
 This project was born from a conversation about why full PostgreSQL protocol on NATS is a bad bet — and what a realistic, valuable SQL layer on NATS would look like. The answer: SQL as a read-only query layer over JetStream KV materializations, targeting NATS developers who want queryable state without adding a second infrastructure dependency.
 
-The project lives alongside ebind (a task queue + DAG workflow engine on NATS) in the same mono-repo. ebind demonstrates the pattern of "stream → KV" materialization for workflow state, which natsql generalizes into a configurable engine. natsql is independent from ebind — no code imports.
+natsql generalizes the pattern of "stream → KV" materialization into a configurable engine, inspired by reference implementations in the NATS ecosystem.
 
 ## Current State (v1.0)
 
@@ -74,7 +74,7 @@ Shipped **2026-05-28** with 7,339 LOC across 29 Go source files.
 | YAML/JSON config for schema definition | Works for both Go embed and standalone ops; trivial to parse; no DDL parser needed for v1 | ✓ Good |
 | Read-only SQL (SELECT) | Writes go through streams; SQL is the read path. Separates concerns cleanly | ✓ Good |
 | NATS request-reply + HTTP interfaces | NATS-native for app code, HTTP for tooling/curl | ✓ Good |
-| Independent from ebind | ebind is reference inspiration, not a dependency. Keeps surface area minimal | ✓ Good |
+| Minimal dependencies | No external project dependencies; reference inspiration only. Keeps surface area minimal | ✓ Good |
 | v1 = functional prototype | Prove the concept works end-to-end before hardening | ✓ Good |
 | Minimal SQL (eq + range + LIMIT) | Covers the 90% use case for KV-backed state queries | ⚠️ Revisit: range scans deferred to v2 |
 | vitess sqlparser | Battle-tested SQL parser, handles all edge cases | ✓ Good |

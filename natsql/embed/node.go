@@ -1,7 +1,5 @@
 // Package embed starts and supervises a single NATS JetStream server in-process.
-//
-// This package is adapted from ebind/embed/ but is independently maintained
-// per PROJECT.md (no import from ebind). Single-node only per D-55.
+// Single-node only per D-55.
 package embed
 
 import (

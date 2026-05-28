@@ -26,7 +26,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 ### Core Framework
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| Go | 1.22+ | Language | Constraint from PROJECT.md. ebind already uses 1.26. |
+| Go | 1.22+ | Language | Constraint from PROJECT.md. |
 | `vitess.io/vitess/go/vt/sqlparser` | latest | SQL parsing (SELECT-only AST) | Most battle-tested SQL parser in Go. Handles all edge cases for MySQL dialect. Clean AST for SELECT statements with WHERE clause extraction. |
 | `github.com/nats-io/nats.go/jetstream` | v1.51+ | JetStream KV + Stream API | The official simplified JetStream client. Replaced the legacy `nats` package API. Required for KV bucket ops, stream consumption, CAS. |
 | `github.com/nats-io/nats-server/v2` | v2.14+ | Embedded NATS server | Required for single-binary deployment (EMBED-02, EMBED-03). Enables no-external-dependency mode. |
@@ -42,7 +42,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 ### CLI
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| `github.com/spf13/cobra` | v1.10+ | CLI framework | Already in the monorepo (used by ebind). Standard — powers Kubernetes, Hugo, GitHub CLI, NATS CLI itself. |
+| `github.com/spf13/cobra` | v1.10+ | CLI framework | Already in the monorepo. Standard — powers Kubernetes, Hugo, GitHub CLI, NATS CLI itself. |
 ### Config
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
@@ -51,7 +51,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 ### Testing
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| `github.com/nats-io/nats-server/v2` | v2.14+ | Test harness NATS | Already in ebind. Use `embed.StartNode` for integration tests. |
+| `github.com/nats-io/nats-server/v2` | v2.14+ | Test harness NATS | Use `embed.StartNode` for integration tests. |
 | `testing` + `net/http/httptest` | stdlib | HTTP test harness | Use with chi — serves HTTP handler directly, no server process needed. |
 ## Detailed Rationale
 ### 1. SQL Parser: vitess.io/vitess/go/vt/sqlparser
@@ -142,7 +142,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 | xwb1989/sqlparser | https://github.com/xwb1989/sqlparser | MEDIUM (archived/unmaintained) |
 | pingcap/tidb/parser | https://github.com/pingcap/tidb/tree/master/pkg/parser | HIGH (actively maintained) |
 | rqlite architecture | https://github.com/rqlite/rqlite | MEDIUM (reference for query patterns) |
-| ebind go.mod | `/home/pawel/repo/natsdb/ebind/go.mod` | HIGH (existing monorepo versions) |
+
 <!-- GSD:stack-end -->
 
 <!-- GSD:conventions-start source:CONVENTIONS.md -->

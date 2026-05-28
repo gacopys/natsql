@@ -2,11 +2,11 @@
 
 **Project:** natsql  
 **Researched:** 2026-05-23  
-**Confidence:** HIGH (confirmed against NATS JetStream docs, ebind reference code, and comparable SQL-over-KV engines)
+**Confidence:** HIGH (confirmed against NATS JetStream docs and comparable SQL-over-KV engines)
 
 ## Executive Summary
 
-natsql is a materialized view engine that consumes JetStream events, maintains NATS KV bucket snapshots, and serves read-only SQL queries. The architecture separates three concerns — **materialization** (stream→KV), **query** (SQL→KV reads), and **transport** (NATS request-reply / HTTP / Go embed) — into independent components that share a common KV store. The design follows patterns proven in the ebind codebase (CAS-based state management, durable consumer recovery, KV key hierarchy) and adapts the parse→validate→plan→execute pipeline from go-mysql-server to the KV-backed execution model.
+natsql is a materialized view engine that consumes JetStream events, maintains NATS KV bucket snapshots, and serves read-only SQL queries. The architecture separates three concerns — **materialization** (stream→KV), **query** (SQL→KV reads), and **transport** (NATS request-reply / HTTP / Go embed) — into independent components that share a common KV store. The design follows established NATS patterns (CAS-based state management, durable consumer recovery, KV key hierarchy) and adapts the parse→validate→plan→execute pipeline from go-mysql-server to the KV-backed execution model.
 
 ---
 
@@ -277,7 +277,7 @@ for {
 
 ### 3.1 Key Space
 
-All state for all views lives in a single KV bucket named `natsql-views`. This follows the ebind pattern of one bucket per subsystem.
+All state for all views lives in a single KV bucket named `natsql-views`.
 
 ```
 Key hierarchy:
@@ -804,7 +804,7 @@ natsql/
         └── main.go
 ```
 
-The ebind package layout is the model: public API surface is minimal (one struct, three core methods), all implementation detail is internal. Embedders use `natsql.New(js, config).Execute(ctx, "SELECT ...")`.
+The package layout follows Go best practices: public API surface is minimal (one struct, three core methods), all implementation detail is internal. Embedders use `natsql.New(js, config).Execute(ctx, "SELECT ...")`.
 
 ---
 
@@ -1054,10 +1054,7 @@ Phase 5: Operational Hardening
 
 | Source | What | Confidence |
 |--------|------|------------|
-| ebind `workflow/store_nats.go` | KV key hierarchy pattern (`<id>/meta`, `<id>/step/<x>`, `<id>/result/<x>`) | HIGH (local code) |
-| ebind `workflow/scheduler.go` | Event-driven state machine + CAS retry pattern | HIGH (local code) |
-| ebind `workflow/events_nats.go` | Durable JetStream consumer with AckExplicit | HIGH (local code) |
-| ebind `stream/setup.go` | Stream configuration patterns | HIGH (local code) |
+
 | NATS JetStream docs | Consumer types, KV store capabilities, CAS semantics | HIGH (docs.nats.io) |
 | Materialize architecture blog | pTVC abstraction, incremental computation, adapter/storage/compute split | MEDIUM (architecture inspiration, overkill for v1) |
 | go-mysql-server ARCHITECTURE.md | SQL pipeline: parse → analyze (resolve+optimize) → execute | HIGH (pattern adapted for v1) |

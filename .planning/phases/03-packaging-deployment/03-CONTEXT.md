@@ -32,7 +32,7 @@ Package natsql as a Go library (importable) and a standalone binary with both em
 - **D-53:** Default embedded NATS port is 4222 (same as NATS default).
 
 ### Embedded NATS Integration
-- **D-54:** Copy the embedded NATS pattern from `ebind/embed/` into a new `natsql/embed/` package (not import ebind — maintain independence per PROJECT.md).
+- **D-54:** Create a new `natsql/embed/` package for embedded NATS startup.
 - **D-55:** Single-node only (`StartNode`). Cluster mode deferred.
 - **D-56:** JetStream store directory configurable via `--store-dir` flag (default `./data/nats`). Memory-backed only if explicitly configured.
 
@@ -65,16 +65,11 @@ Package natsql as a Go library (importable) and a standalone binary with both em
 
 ### Project requirements
 - `.planning/REQUIREMENTS.md` — IFC-03, DEP-01 through DEP-04 define Phase 3 requirements
-- `.planning/PROJECT.md` — Project constraints, independence from ebind
+- `.planning/PROJECT.md` — Project constraints
 
 ### Research
 - `.planning/research/SUMMARY.md` — Deployment mode patterns, graceful shutdown
 - `.planning/research/STACK.md` — Cobra CLI rationale
-
-### Reference implementation (ebind)
-- `ebind/embed/node.go` — Embedded NATS server startup pattern (to be adapted/copied)
-- `ebind/embed/cluster.go` — Cluster mode pattern (reference only — single-node for v1)
-- `ebind/embed/cluster_test.go` — Test harness for in-process NATS
 
 ### Phase 1 & 2 artifacts
 - `natsql/engine/engine.go` — Existing Engine struct (Start/Close lifecycle to extend)
@@ -86,13 +81,12 @@ Package natsql as a Go library (importable) and a standalone binary with both em
 ## Existing Code Insights
 
 ### Reusable Assets
-- `ebind/embed/node.go` — `StartNode` function pattern (NodeConfig, Node struct, ClientURL, Shutdown)
 - `natsql/engine/engine.go` — Engine struct with `Start()`/`Close()` lifecycle (extend for phased shutdown)
 - `natsql/engine/engine_test.go` — Existing engine test patterns (extend for shutdown verification)
 - `natsql/cmd/natsql/main.go` — Current SIGINT handling pattern (refactor for cobra)
 
 ### Established Patterns
-- Consumer lifecycle from ebind: `defer cc.Stop(); <-cc.Closed()` for clean cleanup
+- Consumer lifecycle: `defer cc.Stop(); <-cc.Closed()` for clean cleanup
 - Engine uses `sync.WaitGroup` for goroutine tracking
 - Functional options pattern: `type Option func(*Engine)` with `WithLogger`
 

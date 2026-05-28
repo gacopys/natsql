@@ -21,7 +21,7 @@ affects: phase-03-packaging-deployment (02-CLI, 03-facade)
 tech-stack:
   added:
     - "github.com/nats-io/nats-server/v2" (direct dependency)
-    - "natsql/embed/" (standalone package, copied pattern from ebind)
+    - "natsql/embed/" (standalone package, copied pattern from NATS ecosystem)
   patterns:
     - Embedded NATS server lifecycle (StartNode/Shutdown)
     - Functional options for constructor configuration
@@ -40,7 +40,7 @@ key-files:
     - natsql/go.mod
     - natsql/go.sum
 key-decisions:
-  - "D-54: Copy ebind embed pattern into natsql/embed/ as new package (not import ebind)"
+  - "D-54: Create natsql/embed/ as new standalone package"
   - "D-55: Single-node embedded NATS only (StartNode, no cluster)"
   - "D-56: Store directory configurable via cfg.NATS.StoreDir"
   - "D-57: Close ordering: HTTP stop → NATS unsub → drain → cancel → Wait"
@@ -71,7 +71,7 @@ completed: 2026-05-28
 - **Files modified:** 3 created, 7 modified
 
 ## Accomplishments
-- Created `natsql/embed/` package with `StartNode`, `NodeConfig`, `Node` for single-node embedded NATS (adapted from ebind, not imported)
+- Created `natsql/embed/` package with `StartNode`, `NodeConfig`, `Node` for single-node embedded NATS (adapted from reference implementations)
 - Extended `Config` with `NATSConfig` (URL, Embedded, StoreDir) and `HTTPConfig` (Port) sub-types plus `SetDefaults()`
 - Added `Engine.NewEmbedded()` constructor that starts embedded NATS, connects, and returns a ready engine
 - Added `WithHTTPServer(addr)`, `WithQueryPort(port)`, `WithNATSOptions(storeDir)` option functions
