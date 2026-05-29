@@ -187,6 +187,9 @@ func extractValue(expr sqlparser.Expr) (any, error) {
 	case *sqlparser.NullVal:
 		return nil, nil
 
+	case sqlparser.BoolVal:
+		return bool(e), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported value type: %T", expr)
 	}

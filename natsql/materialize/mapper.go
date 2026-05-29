@@ -1,6 +1,7 @@
 package materialize
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -62,9 +63,11 @@ func NewMapper(viewCfg *natsql.ViewConfig) (*Mapper, error) {
 // MapRow extracts and validates column values from a JetStream event,
 // producing a RowMutation.
 func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
-	// 1. Parse JSON
+	// 1. Parse JSON with number preservation (FIX-MAT-04)
 	var data map[string]any
-	if err := json.Unmarshal(msg.Data(), &data); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(msg.Data()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&data); err != nil {
 		return nil, fmt.Errorf("%w: invalid JSON: %v", ErrMalformedEvent, err)
 	}
 
@@ -158,6 +161,8 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 		switch v := val.(type) {
 		case string:
 			return v, nil
+		case json.Number:
+			return v.String(), nil
 		case float64:
 			return fmt.Sprint(v), nil
 		default:
@@ -166,6 +171,13 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 
 	case natsql.ColumnTypeNumber:
 		switch v := val.(type) {
+		case json.Number:
+			// Validate it's a valid number, but keep as json.Number to
+			// preserve exact representation through json.Marshal (FIX-MAT-04)
+			if _, err := v.Float64(); err != nil {
+				return nil, fmt.Errorf("column %q: invalid number %q: %w", colName, v, err)
+			}
+			return v, nil
 		case float64:
 			return v, nil
 		default:
@@ -198,21 +210,28 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 }
 
 // stringifyValue converts a typed value to its string representation
-// for use in PK construction.
+// for use in PK construction, with sanitization for KV key safety.
 func stringifyValue(val any) string {
+	var s string
 	switch v := val.(type) {
 	case string:
-		return v
+		s = v
+	case json.Number:
+		s = v.String() // exact representation, no float64 precision loss
 	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
+		s = strconv.FormatFloat(v, 'f', -1, 64)
 	case bool:
 		if v {
-			return "true"
+			s = "true"
+		} else {
+			s = "false"
 		}
-		return "false"
 	case time.Time:
-		return v.Format(time.RFC3339Nano)
+		s = v.Format(time.RFC3339Nano)
 	default:
-		return fmt.Sprint(v)
+		s = fmt.Sprint(v)
 	}
+	return kv.SanitizePK(s)
 }
+
+

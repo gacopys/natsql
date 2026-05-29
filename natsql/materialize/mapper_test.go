@@ -2,7 +2,9 @@ package materialize
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -137,8 +139,10 @@ func TestMapRow_NestedJSONPath(t *testing.T) {
 	if mut.RowData["name"] != "Alice" {
 		t.Errorf("RowData[name] = %v, want %q", mut.RowData["name"], "Alice")
 	}
-	if mut.RowData["age"] != float64(30) {
-		t.Errorf("RowData[age] = %v (%T), want float64(30)", mut.RowData["age"], mut.RowData["age"])
+	// With UseNumber, numbers are json.Number; verify by string comparison
+	ageVal := fmt.Sprint(mut.RowData["age"])
+	if ageVal != "30" {
+		t.Errorf("RowData[age] = %v (%T), want 30", mut.RowData["age"], mut.RowData["age"])
 	}
 }
 
@@ -190,8 +194,9 @@ func TestMapRow_NumberType_ValidFloat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if mut.RowData["price"] != float64(29.99) {
-		t.Errorf("RowData[price] = %v, want 29.99", mut.RowData["price"])
+	priceVal := fmt.Sprint(mut.RowData["price"])
+	if priceVal != "29.99" {
+		t.Errorf("RowData[price] = %v (%T), want 29.99", mut.RowData["price"], mut.RowData["price"])
 	}
 }
 
@@ -534,6 +539,63 @@ func TestMapRow_NestedPathDepthLimit(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMalformedEvent) {
 		t.Errorf("expected ErrMalformedEvent, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stringifyValue + sanitizePK unit tests
+// ---------------------------------------------------------------------------
+
+func TestStringifyValue_Cases(t *testing.T) {
+	tests := []struct {
+		val  any
+		want string // sanitized output
+	}{
+		{"hello", "hello"},
+		{float64(3.14), "3.14"},
+		{true, "true"},
+		{false, "false"},
+		{json.Number("42"), "42"},
+		{json.Number("9007199254740993"), "9007199254740993"},
+		{struct{}{}, "{}"},
+	}
+	for _, tc := range tests {
+		got := stringifyValue(tc.val)
+		if got != tc.want {
+			t.Errorf("stringifyValue(%v) = %q, want %q", tc.val, got, tc.want)
+		}
+	}
+}
+
+func TestStringifyValue_SanitizesSpecialChars(t *testing.T) {
+	got := stringifyValue("a/b|c")
+	if got != "a_sb_pc" {
+		t.Errorf("stringifyValue with special chars = %q, want %q", got, "a_sb_pc")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// validateType uncovered paths
+// ---------------------------------------------------------------------------
+
+func TestValidateType_Timestamp_Invalid(t *testing.T) {
+	_, err := validateType("not-a-timestamp", natsql.ColumnTypeTimestamp, "ts")
+	if err == nil {
+		t.Fatal("expected error for invalid timestamp")
+	}
+}
+
+func TestValidateType_Timestamp_NonString(t *testing.T) {
+	_, err := validateType(123, natsql.ColumnTypeTimestamp, "ts")
+	if err == nil {
+		t.Fatal("expected error for non-string timestamp")
+	}
+}
+
+func TestValidateType_UnknownColumnType(t *testing.T) {
+	_, err := validateType("x", "unknown_type", "col")
+	if err == nil {
+		t.Fatal("expected error for unknown column type")
 	}
 }
 

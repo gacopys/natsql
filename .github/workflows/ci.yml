@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: natsql/go.mod
+
+      - name: Build
+        run: go build ./...
+        working-directory: natsql
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: natsql
+
+      - name: Test + coverage
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out -v ./... 2>&1
+          echo ""
+          echo "━━━ Coverage per function ━━━"
+          go tool cover -func=coverage.out
+        working-directory: natsql
+
+      - name: Build examples
+        run: |
+          for dir in examples/*/; do
+            if [ -f "$dir/go.mod" ]; then
+              echo "Building $dir..."
+              (cd "$dir" && go build ./...)
+            else
+              echo "Skipping $dir (no go.mod)"
+            fi
+          done

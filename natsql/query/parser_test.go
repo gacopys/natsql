@@ -3,6 +3,8 @@ package query
 import (
 	"encoding/json"
 	"testing"
+
+	"vitess.io/vitess/go/vt/sqlparser"
 )
 
 // ---------------------------------------------------------------------------
@@ -108,6 +110,13 @@ func TestParseWithInClause(t *testing.T) {
 	}
 }
 
+func TestParse_MultiFrom_Rejected(t *testing.T) {
+	_, err := Parse("SELECT * FROM a, b WHERE a.id = 'x'")
+	if err == nil {
+		t.Fatal("expected error for multi-table SELECT, got nil")
+	}
+}
+
 func TestParseRejectsNoWhere(t *testing.T) {
 	_, err := Parse(`SELECT * FROM users`)
 	if err == nil {
@@ -200,6 +209,293 @@ func TestQueryResultMarshalWithError(t *testing.T) {
 	want := `{"results":[],"error":"view not found"}`
 	if got != want {
 		t.Errorf("JSON = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractConditions unit tests
+// ---------------------------------------------------------------------------
+
+func TestExtractConditions_AND_TwoConditions(t *testing.T) {
+	parser := sqlparser.NewTestParser()
+	stmt, err := parser.Parse("SELECT * FROM t WHERE a = 1 AND b = 2")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := stmt.(*sqlparser.Select)
+	conds, err := extractConditions(sel.Where.Expr)
+	if err != nil {
+		t.Fatalf("extractConditions: %v", err)
+	}
+	if len(conds) != 2 {
+		t.Fatalf("expected 2 conditions, got %d", len(conds))
+	}
+}
+
+func TestExtractConditions_OR_Rejected(t *testing.T) {
+	parser := sqlparser.NewTestParser()
+	stmt, err := parser.Parse("SELECT * FROM t WHERE a = 1 OR b = 2")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := stmt.(*sqlparser.Select)
+	_, err = extractConditions(sel.Where.Expr)
+	if err == nil {
+		t.Fatal("expected error for OR, got nil")
+	}
+}
+
+func TestExtractConditions_UnsupportedExpr(t *testing.T) {
+	parser := sqlparser.NewTestParser()
+	stmt, err := parser.Parse("SELECT * FROM t WHERE NOT a = 1")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := stmt.(*sqlparser.Select)
+	_, err = extractConditions(sel.Where.Expr)
+	if err == nil {
+		t.Fatal("expected error for unsupported expression, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// comparisonToCondition unit tests
+// ---------------------------------------------------------------------------
+
+func TestComparisonToCondition_InvalidLeftOperand(t *testing.T) {
+	// Use a comparison where the left side is a literal, not a column
+	parser := sqlparser.NewTestParser()
+	stmt, err := parser.Parse("SELECT * FROM t WHERE 1 = a")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := stmt.(*sqlparser.Select)
+	_, err = extractConditions(sel.Where.Expr)
+	if err == nil {
+		t.Fatal("expected error for invalid left operand, got nil")
+	}
+}
+
+func TestComparisonToCondition_UnsupportedOperator(t *testing.T) {
+	parser := sqlparser.NewTestParser()
+	stmt, err := parser.Parse("SELECT * FROM t WHERE a > 1")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := stmt.(*sqlparser.Select)
+	_, err = extractConditions(sel.Where.Expr)
+	if err == nil {
+		t.Fatal("expected error for unsupported operator, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractLimit unit tests
+// ---------------------------------------------------------------------------
+
+func TestExtractLimit_Negative(t *testing.T) {
+	_, err := Parse("SELECT * FROM t WHERE a = 1 LIMIT -5")
+	if err == nil {
+		t.Fatal("expected error for negative LIMIT, got nil")
+	}
+}
+
+func TestExtractLimit_NonInteger(t *testing.T) {
+	_, err := Parse("SELECT * FROM t WHERE a = 1 LIMIT 1.5")
+	if err == nil {
+		t.Fatal("expected error for non-integer LIMIT, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractSelectExprs unit tests
+// ---------------------------------------------------------------------------
+
+func TestExtractSelectExprs_NilExprs(t *testing.T) {
+	result := extractSelectExprs(nil)
+	if result != nil {
+		t.Errorf("expected nil for nil exprs, got %v", result)
+	}
+}
+
+func TestExtractSelectExprs_EmptyExprs(t *testing.T) {
+	result := extractSelectExprs(&sqlparser.SelectExprs{})
+	if result != nil {
+		t.Errorf("expected nil for empty exprs, got %v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValuesEqual unit tests
+// ---------------------------------------------------------------------------
+
+func TestValuesEqual(t *testing.T) {
+	tests := []struct {
+		a, b any
+		want bool
+	}{
+		{a: nil, b: nil, want: true},
+		{a: nil, b: "x", want: false},
+		{a: "x", b: nil, want: false},
+		{a: float64(1), b: int64(1), want: true},
+		{a: int64(1), b: float64(1), want: true},
+		{a: int64(1), b: int64(2), want: false},
+		{a: float64(1.5), b: float64(1.5), want: true},
+		{a: float64(1.5), b: float64(2.5), want: false},
+		{a: true, b: true, want: true},
+		{a: true, b: false, want: false},
+		{a: "hello", b: "hello", want: true},
+		{a: "hello", b: "world", want: false},
+		{a: float64(1), b: "1", want: false},
+		{a: true, b: "true", want: false},
+	}
+	for _, tc := range tests {
+		got := valuesEqual(tc.a, tc.b)
+		if got != tc.want {
+			t.Errorf("valuesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// filterRow unit tests
+// ---------------------------------------------------------------------------
+
+func TestFilterRow_OpEq_Pass(t *testing.T) {
+	if !filterRow(map[string]any{"a": "x"}, []Condition{{Column: "a", Op: OpEq, Value: "x"}}) {
+		t.Error("expected filterRow to pass for matching OpEq")
+	}
+}
+
+func TestFilterRow_OpNeq_Pass(t *testing.T) {
+	if !filterRow(map[string]any{"a": "x"}, []Condition{{Column: "a", Op: OpNeq, Value: "y"}}) {
+		t.Error("expected filterRow to pass for non-matching OpNeq")
+	}
+}
+
+func TestFilterRow_OpNeq_Fail(t *testing.T) {
+	if filterRow(map[string]any{"a": "x"}, []Condition{{Column: "a", Op: OpNeq, Value: "x"}}) {
+		t.Error("expected filterRow to fail for matching OpNeq")
+	}
+}
+
+func TestFilterRow_OpIn_Match(t *testing.T) {
+	if !filterRow(map[string]any{"a": "x"}, []Condition{{Column: "a", Op: OpIn, Value: []any{"x", "y"}}}) {
+		t.Error("expected filterRow to pass for matching OpIn")
+	}
+}
+
+func TestFilterRow_OpIn_NoMatch(t *testing.T) {
+	if filterRow(map[string]any{"a": "z"}, []Condition{{Column: "a", Op: OpIn, Value: []any{"x", "y"}}}) {
+		t.Error("expected filterRow to fail for non-matching OpIn")
+	}
+}
+
+func TestFilterRow_OpIn_InvalidValue(t *testing.T) {
+	row := map[string]any{"a": 1}
+	conds := []Condition{{Column: "a", Op: OpIn, Value: "not-a-slice"}}
+	// If OpIn value is not []any, filter should return false (no match)
+	if filterRow(row, conds) {
+		t.Error("filterRow should return false for OpIn with non-slice value")
+	}
+}
+
+func TestFilterRow_MissingColumn(t *testing.T) {
+	row := map[string]any{"a": 1}
+	conds := []Condition{{Column: "missing", Op: OpEq, Value: "x"}}
+	if filterRow(row, conds) {
+		t.Error("filterRow should return false for missing column")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// projectRow unit tests
+// ---------------------------------------------------------------------------
+
+func TestProjectRow_StarInExplicit(t *testing.T) {
+	row := map[string]any{"a": 1, "b": 2}
+	result := projectRow(row, []string{"*"})
+	if len(result) != 2 {
+		t.Errorf("expected full row with *, got %d cols", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractValue unit tests
+// ---------------------------------------------------------------------------
+
+func TestExtractValue_NullVal(t *testing.T) {
+	v, err := extractValue(&sqlparser.NullVal{})
+	if err != nil {
+		t.Fatalf("extractValue(NullVal): %v", err)
+	}
+	if v != nil {
+		t.Errorf("expected nil, got %v", v)
+	}
+}
+
+func TestExtractValue_BoolVal(t *testing.T) {
+	v, err := extractValue(sqlparser.BoolVal(true))
+	if err != nil {
+		t.Fatalf("extractValue(BoolVal): %v", err)
+	}
+	if v != true {
+		t.Errorf("expected true, got %v", v)
+	}
+}
+
+func TestExtractValue_UnsupportedType(t *testing.T) {
+	_, err := extractValue(&sqlparser.ColName{})
+	if err == nil {
+		t.Fatal("expected error for unsupported value type")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// additional Parse error cases
+// ---------------------------------------------------------------------------
+
+func TestParse_NonSelectStatement(t *testing.T) {
+	_, err := Parse("CREATE TABLE t (id int)")
+	if err == nil {
+		t.Fatal("expected error for non-SELECT statement")
+	}
+}
+
+func TestParse_NonAliasedFrom(t *testing.T) {
+	_, err := Parse("SELECT * FROM (SELECT 1) AS sub WHERE a = 1")
+	if err == nil {
+		t.Fatal("expected error for non-aliased FROM")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// literalToGo unit tests
+// ---------------------------------------------------------------------------
+
+func TestLiteralToGo_IntParseError(t *testing.T) {
+	// A very large int literal that ParseInt can't handle falls back to the raw value
+	_ = literalToGo(&sqlparser.Literal{Type: sqlparser.IntVal, Val: "999999999999999999999999"})
+}
+
+func TestLiteralToGo_FloatVal(t *testing.T) {
+	v := literalToGo(&sqlparser.Literal{Type: sqlparser.FloatVal, Val: "3.14"})
+	if v != float64(3.14) {
+		t.Errorf("expected 3.14, got %v", v)
+	}
+}
+
+func TestLiteralToGo_DecimalVal(t *testing.T) {
+	v := literalToGo(&sqlparser.Literal{Type: sqlparser.DecimalVal, Val: "10.5"})
+	if v != float64(10.5) {
+		t.Errorf("expected 10.5, got %v", v)
+	}
+}
+
+func TestLiteralToGo_UnknownType(t *testing.T) {
+	v := literalToGo(&sqlparser.Literal{Type: sqlparser.HexVal, Val: "0x1A"})
+	if v != "0x1A" {
+		t.Errorf("expected raw value, got %v", v)
 	}
 }
 
