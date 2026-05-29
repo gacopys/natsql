@@ -2,6 +2,7 @@ package materialize
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -538,6 +539,83 @@ func TestMapRow_NestedPathDepthLimit(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMalformedEvent) {
 		t.Errorf("expected ErrMalformedEvent, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stringifyValue + sanitizePK unit tests
+// ---------------------------------------------------------------------------
+
+func TestStringifyValue_Cases(t *testing.T) {
+	tests := []struct {
+		val  any
+		want string // sanitized output
+	}{
+		{"hello", "hello"},
+		{float64(3.14), "3.14"},
+		{true, "true"},
+		{false, "false"},
+		{json.Number("42"), "42"},
+		{json.Number("9007199254740993"), "9007199254740993"},
+		{struct{}{}, "{}"},
+	}
+	for _, tc := range tests {
+		got := stringifyValue(tc.val)
+		if got != tc.want {
+			t.Errorf("stringifyValue(%v) = %q, want %q", tc.val, got, tc.want)
+		}
+	}
+}
+
+func TestSanitizePK(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"abc", "abc"},
+		{"a|b", "a_pb"},
+		{"a/b", "a_sb"},
+		{"a*b", "a_ab"},
+		{"a>b", "a_gb"},
+		{"a_b", "a__b"},
+	}
+	for _, tc := range tests {
+		got := sanitizePK(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizePK(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestStringifyValue_SanitizesSpecialChars(t *testing.T) {
+	got := stringifyValue("a/b|c")
+	if got != "a_sb_pc" {
+		t.Errorf("stringifyValue with special chars = %q, want %q", got, "a_sb_pc")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// validateType uncovered paths
+// ---------------------------------------------------------------------------
+
+func TestValidateType_Timestamp_Invalid(t *testing.T) {
+	_, err := validateType("not-a-timestamp", natsql.ColumnTypeTimestamp, "ts")
+	if err == nil {
+		t.Fatal("expected error for invalid timestamp")
+	}
+}
+
+func TestValidateType_Timestamp_NonString(t *testing.T) {
+	_, err := validateType(123, natsql.ColumnTypeTimestamp, "ts")
+	if err == nil {
+		t.Fatal("expected error for non-string timestamp")
+	}
+}
+
+func TestValidateType_UnknownColumnType(t *testing.T) {
+	_, err := validateType("x", "unknown_type", "col")
+	if err == nil {
+		t.Fatal("expected error for unknown column type")
 	}
 }
 

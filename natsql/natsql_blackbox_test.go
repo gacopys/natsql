@@ -616,6 +616,65 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Facade constructor tests
+// ---------------------------------------------------------------------------
+
+func TestFacade_New_NilConfig(t *testing.T) {
+	_, err := natsql.New(nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil config, got nil")
+	}
+}
+
+func TestFacade_NewWithNATS_NilConn(t *testing.T) {
+	_, err := natsql.NewWithNATS(nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil conn, got nil")
+	}
+}
+
+func TestFacade_NewWithNATS_InvalidConfig(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	// Config with view that has no name — should fail validation
+	_, err := natsql.NewWithNATS(nc, &natsql.Config{
+		Views: []natsql.ViewConfig{
+			{SourceStream: "s", KeyFields: []string{"k"},
+				Columns: []natsql.ColumnConfig{{Name: "k", From: "k", Type: natsql.ColumnTypeString, PrimaryKey: true}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for config with unnamed view")
+	}
+}
+
+func TestFacade_NewEmbedded_InvalidConfig(t *testing.T) {
+	_, err := natsql.NewEmbedded(nil)
+	if err == nil {
+		t.Fatal("expected error for nil config, got nil")
+	}
+}
+
+func TestFacade_WithHTTPServer(t *testing.T) {
+	eng, err := natsql.NewEmbedded(&natsql.Config{
+		Views: []natsql.ViewConfig{
+			{
+				Name:         "test",
+				SourceStream: "test",
+				KeyFields:    []string{"id"},
+				Columns:      []natsql.ColumnConfig{{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+			},
+		},
+	}, natsql.WithHTTPServer(":9091"), natsql.WithQueryPort(9092))
+	if err != nil {
+		t.Fatalf("NewEmbedded: %v", err)
+	}
+	eng.Close()
+}
+
+// ---------------------------------------------------------------------------
 // NATS test helpers
 // ---------------------------------------------------------------------------
 

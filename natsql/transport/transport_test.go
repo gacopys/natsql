@@ -213,6 +213,29 @@ func TestHTTPInvalidBody(t *testing.T) {
 }
 
 // TestHTTPContentType verifies the response has Content-Type: application/json.
+// TestHTTPBodyTooLarge verifies that oversized request bodies are rejected with 413.
+func TestHTTPBodyTooLarge(t *testing.T) {
+	handler := &mockHandler{result: &query.QueryResult{}}
+
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, handler)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Build a body larger than maxRequestBodySize (1MB)
+	largeSQL := `{"sql":"SELECT * FROM test WHERE x = '` + strings.Repeat("A", 2<<20) + `'"}`
+	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(largeSQL))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d (413)", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
 func TestHTTPContentType(t *testing.T) {
 	handler := &mockHandler{
 		result: &query.QueryResult{},

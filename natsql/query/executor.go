@@ -190,7 +190,7 @@ func valuesEqual(a, b any) bool {
 		return as == bs
 	}
 
-	// Fall back to Sprint for unhandled types (conservative — won't false-match)
-	// because type-mismatched pairs almost always have different Sprint output
-	return fmt.Sprint(a) == fmt.Sprint(b)
+	// For same unhandled types, compare string representations
+	// For different types, return false to avoid false matches
+	return fmt.Sprintf("%T", a) == fmt.Sprintf("%T", b) && fmt.Sprint(a) == fmt.Sprint(b)
 }

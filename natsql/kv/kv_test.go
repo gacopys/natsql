@@ -233,6 +233,63 @@ func TestStoreSchema_OverwriteUpdatesSchema(t *testing.T) {
 	}
 }
 
+func TestSanitizeKVPK(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"abc", "abc"},
+		{"a|b", "a_pb"},
+		{"a/b", "a_sb"},
+		{"a*b", "a_ab"},
+		{"a>b", "a_gb"},
+		{"a_b", "a__b"},
+		{"a|/", "a_p_s"},
+	}
+	for _, tc := range tests {
+		got := sanitizeKVPK(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizeKVPK(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestPkKey_Sanitization(t *testing.T) {
+	got := PkKey("view", "a|b/c*d>e_f")
+	want := "view/pk/a_pb_sc_ad_ge__f"
+	if got != want {
+		t.Errorf("PkKey = %q, want %q", got, want)
+	}
+}
+
+func TestEncodePKValue_Float32(t *testing.T) {
+	result := EncodePKValue(float32(3.14))
+	if result == "" {
+		t.Error("EncodePKValue(float32) returned empty")
+	}
+}
+
+func TestEncodePKValue_DefaultCase(t *testing.T) {
+	result := EncodePKValue(struct{ name string }{name: "test"})
+	if result == "" {
+		t.Error("EncodePKValue(struct) returned empty")
+	}
+}
+
+func TestMustInitBucket_Success(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kv := MustInitBucket(ctx, js, 1)
+	if kv == nil {
+		t.Fatal("MustInitBucket returned nil")
+	}
+}
+
 func TestMustInitBucket_PanicsOnError(t *testing.T) {
 	ctx := context.Background()
 	// nil JetStream should cause panic

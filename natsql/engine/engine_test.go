@@ -1228,6 +1228,71 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	}
 }
 
+// TestEngineNCEdgeCases validates accessor methods and config edge cases.
+func TestEngineNCEdgeCases(t *testing.T) {
+	// NC on an engine created with engine.New(nil, ...) should return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_NC_EDGE"
+	createStream(t, ctx, js, streamName)
+
+	cfg := &natsqlpkg.Config{
+		Views: []natsqlpkg.ViewConfig{
+			{
+				Name:         "edge_view",
+				SourceStream: streamName,
+				KeyFields:    []string{"id"},
+				Columns:      []natsqlpkg.ColumnConfig{{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true}},
+			},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := engine.New(nil, js, cfg, engine.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer eng.Close()
+
+	// NC() should return nil since we passed nil
+	if eng.NC() != nil {
+		t.Error("NC() should return nil for engine.New(nil, ...)")
+	}
+
+	// EmbedNode() should return nil for non-embedded engine
+	if eng.EmbedNode() != nil {
+		t.Error("EmbedNode() should return nil for non-embedded engine")
+	}
+}
+
+func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	streamName := "TEST_NEW_ERR"
+	createStream(t, ctx, js, streamName)
+
+	// Config with missing view name should fail validation
+	cfg := &natsqlpkg.Config{
+		Views: []natsqlpkg.ViewConfig{
+			{SourceStream: streamName, KeyFields: []string{"id"},
+				Columns: []natsqlpkg.ColumnConfig{{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true}}},
+		},
+	}
+	_, err := engine.New(nc, js, cfg)
+	if err == nil {
+		t.Fatal("expected error for config with missing view name, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers — start embedded NATS server and create JetStream streams
 // ---------------------------------------------------------------------------
