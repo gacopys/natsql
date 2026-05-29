@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: natsql/go.mod
+
+      - name: Build
+        run: go build ./...
+        working-directory: natsql
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: natsql
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+        working-directory: natsql
+
+      - name: Build examples
+        run: |
+          for dir in examples/*/; do
+            echo "Building $dir..."
+            (cd "$dir" && go build ./...)
+          done
