@@ -24,12 +24,12 @@ jobs:
         run: go vet ./...
         working-directory: natsql
 
-      - name: Test with race detector
-        run: go test -race -count=1 ./...
-        working-directory: natsql
-
-      - name: Black-box integration tests
-        run: go test -race -count=1 -v -run TestBlackBox ./...
+      - name: Test + coverage
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out -v ./... 2>&1
+          echo ""
+          echo "━━━ Coverage per function ━━━"
+          go tool cover -func=coverage.out
         working-directory: natsql
 
       - name: Build examples
