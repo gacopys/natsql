@@ -35,6 +35,10 @@ jobs:
       - name: Build examples
         run: |
           for dir in examples/*/; do
-            echo "Building $dir..."
-            (cd "$dir" && go build ./...)
+            if [ -f "$dir/go.mod" ]; then
+              echo "Building $dir..."
+              (cd "$dir" && go build ./...)
+            else
+              echo "Skipping $dir (no go.mod)"
+            fi
           done
