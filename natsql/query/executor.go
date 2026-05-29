@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"natsql/kv"
 )
+
+const fullScanWorkers = 16
 
 // Execute performs a direct PK lookup using kv.Get().
 // Returns a single row or empty slice if not found.
@@ -38,52 +41,96 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	return []map[string]any{projectRow(row, p.Columns)}, nil
 }
 
-// Execute performs a full scan using kv.ListKeys() with client-side filtering.
-// The scan filters keys by the view's PK prefix, retrieves each value,
-// applies WHERE conditions, and limits results.
+// Execute performs a full scan using kvb.WatchAll() which streams all
+// key-value pairs from the bucket in a single subscription (no per-key Gets),
+// then processes them in parallel via a worker pool for unmarshal, filtering,
+// and projection.
 func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
-	keyLister, err := kvb.ListKeys(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing keys: %w", err)
-	}
-
 	prefix := p.ViewName + "/pk/"
-	var results []map[string]any
 
-	for key := range keyLister.Keys() {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
+	watcher, err := kvb.WatchAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("watching keys: %w", err)
+	}
+	defer watcher.Stop()
 
-		entry, err := kvb.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("getting key %q: %w", key, err)
-		}
+	var (
+		mu      sync.Mutex
+		results []map[string]any
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, fullScanWorkers)
+		errCh   = make(chan error, 1)
+	)
 
-		var fullRow map[string]any
-		if err := json.Unmarshal(entry.Value(), &fullRow); err != nil {
-			return nil, fmt.Errorf("unmarshaling row: %w", err)
-		}
-
-		// Apply WHERE filter on full row before projection
-		if !filterRow(fullRow, p.Where) {
-			continue
-		}
-
-		row := fullRow
-		if p.Columns != nil {
-			row = projectRow(fullRow, p.Columns)
-		}
-
-		results = append(results, row)
-
-		// Apply LIMIT
-		if p.Limit > 0 && len(results) >= p.Limit {
+	for entry := range watcher.Updates() {
+		if entry == nil {
 			break
 		}
+		if !strings.HasPrefix(entry.Key(), prefix) {
+			continue
+		}
+
+		mu.Lock()
+		limitReached := p.Limit > 0 && len(results) >= p.Limit
+		mu.Unlock()
+		if limitReached || ctx.Err() != nil {
+			break
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+
+		go func(data []byte) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if p.Limit > 0 {
+				mu.Lock()
+				alreadyFull := len(results) >= p.Limit
+				mu.Unlock()
+				if alreadyFull {
+					return
+				}
+			}
+
+			var fullRow map[string]any
+			if uerr := json.Unmarshal(data, &fullRow); uerr != nil {
+				select {
+				case errCh <- fmt.Errorf("unmarshaling row: %w", uerr):
+				default:
+				}
+				return
+			}
+
+			if !filterRow(fullRow, p.Where) {
+				return
+			}
+
+			row := fullRow
+			if p.Columns != nil {
+				row = projectRow(fullRow, p.Columns)
+			}
+
+			mu.Lock()
+			if p.Limit > 0 && len(results) >= p.Limit {
+				mu.Unlock()
+				return
+			}
+			results = append(results, row)
+			mu.Unlock()
+		}(entry.Value())
+	}
+
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return nil, err
+	default:
+	}
+
+	if p.Limit > 0 && len(results) > p.Limit {
+		results = results[:p.Limit]
 	}
 
 	if results == nil {

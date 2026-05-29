@@ -11,13 +11,14 @@
 // Queries using >, <, >=, <= are NOT supported.
 //
 // Query types tested:
-//    A. PK equality (O(1) fast path)
-//    B. PK equality with column projection
-//    C. Full scan — no matching rows (PK miss + filter miss)
-//    D. Full scan — stopped early by LIMIT
-//    E. Full scan — filtered by non-key column
-//    F. Full scan — two conditions (AND)
-//    G. Full scan — return all rows
+//
+//	A. PK equality (O(1) fast path)
+//	B. PK equality with column projection
+//	C. Full scan — no matching rows (PK miss + filter miss)
+//	D. Full scan — stopped early by LIMIT
+//	E. Full scan — filtered by non-key column
+//	F. Full scan — two conditions (AND)
+//	G. Full scan — return all rows
 package main
 
 import (
@@ -79,7 +80,7 @@ func main() {
 	fmt.Println("✓ Engine started\n")
 
 	// ── Step 2: Generate and publish 10,000 events ──────────────
-	const totalEvents = 10_000
+	const totalEvents = 1000000
 	fmt.Printf("Publishing %d events...\n", totalEvents)
 
 	rng := rand.New(rand.NewSource(42))
@@ -129,7 +130,7 @@ func main() {
 	pollStart := time.Now()
 	for {
 		time.Sleep(500 * time.Millisecond)
-		res := eng.Query(ctx, "SELECT * FROM users WHERE user_id != '' LIMIT 10000")
+		res := eng.Query(ctx, "SELECT * FROM users WHERE user_id != ''")
 		if res.Error != nil {
 			log.Fatalf("Poll query failed: %s", *res.Error)
 		}
