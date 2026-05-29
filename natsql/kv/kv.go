@@ -55,13 +55,13 @@ func MustInitBucket(ctx context.Context, js jetstream.JetStream, replicas int) j
 // NATS KV keys only support [a-zA-Z0-9_\-./=], so '/' is used instead of ':'.
 // PK values are sanitized to prevent key injection from special characters.
 func PkKey(viewName, pkValue string) string {
-	return viewName + "/pk/" + sanitizeKVPK(pkValue)
+	return viewName + "/pk/" + SanitizePK(pkValue)
 }
 
 // sanitizeKVPK encodes characters not allowed in NATS KV keys.
 // NATS KV keys only allow: [a-zA-Z0-9_\-./=]
 // Uses underscore-prefixed codes that are themselves valid key chars.
-func sanitizeKVPK(s string) string {
+func SanitizePK(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 8)
 	for _, r := range s {

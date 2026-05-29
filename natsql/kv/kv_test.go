@@ -233,7 +233,7 @@ func TestStoreSchema_OverwriteUpdatesSchema(t *testing.T) {
 	}
 }
 
-func TestSanitizeKVPK(t *testing.T) {
+func TestSanitizePK(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
@@ -247,9 +247,9 @@ func TestSanitizeKVPK(t *testing.T) {
 		{"a|/", "a_p_s"},
 	}
 	for _, tc := range tests {
-		got := sanitizeKVPK(tc.input)
+		got := SanitizePK(tc.input)
 		if got != tc.want {
-			t.Errorf("sanitizeKVPK(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("SanitizePK(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }

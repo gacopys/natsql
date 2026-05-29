@@ -231,30 +231,7 @@ func stringifyValue(val any) string {
 	default:
 		s = fmt.Sprint(v)
 	}
-	return sanitizePK(s)
+	return kv.SanitizePK(s)
 }
 
-// sanitizePK encodes characters that have special meaning in NATS KV keys.
-// NATS KV keys support [a-zA-Z0-9_\-./=].
-// Characters like /, *, >, . need encoding to prevent key injection.
-func sanitizePK(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 8)
-	for _, r := range s {
-		switch r {
-		case '_':
-			b.WriteString("__")
-		case '|':
-			b.WriteString("_p")
-		case '/':
-			b.WriteString("_s")
-		case '*':
-			b.WriteString("_a")
-		case '>':
-			b.WriteString("_g")
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+

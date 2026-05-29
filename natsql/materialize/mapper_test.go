@@ -567,26 +567,6 @@ func TestStringifyValue_Cases(t *testing.T) {
 	}
 }
 
-func TestSanitizePK(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"abc", "abc"},
-		{"a|b", "a_pb"},
-		{"a/b", "a_sb"},
-		{"a*b", "a_ab"},
-		{"a>b", "a_gb"},
-		{"a_b", "a__b"},
-	}
-	for _, tc := range tests {
-		got := sanitizePK(tc.input)
-		if got != tc.want {
-			t.Errorf("sanitizePK(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
 func TestStringifyValue_SanitizesSpecialChars(t *testing.T) {
 	got := stringifyValue("a/b|c")
 	if got != "a_sb_pc" {
