@@ -37,10 +37,19 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 		}
 		pkValue := strings.Join(pkValues, separator)
 
+		// Collect non-PK conditions for post-filter
+		var nonPKConditions []Condition
+		for _, c := range q.Where {
+			if _, isPK := pkConditions[c.Column]; !isPK {
+				nonPKConditions = append(nonPKConditions, c)
+			}
+		}
+
 		return &PKLookupPlan{
 			ViewName: q.From,
 			PkValue:  pkValue,
 			Columns:  q.Select,
+			Where:    nonPKConditions,
 		}, nil
 	}
 

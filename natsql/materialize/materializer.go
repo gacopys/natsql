@@ -49,8 +49,8 @@ type dlqEnvelope struct {
 }
 
 // publishToDLQ sends a failed event to the dead-letter queue stream.
-// If the publish fails, the error is logged but the function does not crash.
-func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewName string, err error) {
+// Returns nil on success, or an error if the publish fails.
+func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewName string, err error) error {
 	envelope := dlqEnvelope{
 		OriginalMessageB64: base64.StdEncoding.EncodeToString(msg.Data()),
 		ViewName:           viewName,
@@ -60,14 +60,13 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 
 	data, marshalErr := json.Marshal(envelope)
 	if marshalErr != nil {
-		slog.Error("failed to marshal DLQ envelope", "error", marshalErr)
-		return
+		return fmt.Errorf("marshaling DLQ envelope: %w", marshalErr)
 	}
 
-	// Publish to DLQ stream via JetStream context
 	if _, pubErr := js.Publish(ctx, DLQSubject, data); pubErr != nil {
-		slog.Error("failed to publish to DLQ", "error", pubErr)
+		return fmt.Errorf("publishing to DLQ: %w", pubErr)
 	}
+	return nil
 }
 
 // Run starts the materializer for a single view. It blocks until the context is cancelled
@@ -183,7 +182,6 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 
 	// 7. Processing loop
 	var eventCount int64
-	_ = dlqStream // keep reference for potential future use
 
 	for {
 		select {
@@ -198,10 +196,16 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 			mut, mapErr := mapper.MapRow(msg)
 			if mapErr != nil {
 				if errors.Is(mapErr, ErrMalformedEvent) {
-					// D-12: Malformed → DLQ + ack
-					publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr)
-					if ackErr := msg.Ack(); ackErr != nil {
-						logger.Warn("failed to ack malformed event", "seq", getMsgSeq(msg), "error", ackErr)
+					// D-12: Malformed → DLQ + ack (or Nak on DLQ failure)
+					if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr); dlqErr != nil {
+						logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+						if nakErr := msg.Nak(); nakErr != nil {
+							logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+						}
+					} else {
+						if ackErr := msg.Ack(); ackErr != nil {
+							logger.Warn("failed to ack malformed event", "seq", getMsgSeq(msg), "error", ackErr)
+						}
 					}
 					logger.Warn("skipped malformed event", "seq", getMsgSeq(msg), "error", mapErr)
 					continue
@@ -218,9 +222,15 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 			if mut != nil {
 				if writeErr := writer.Apply(ctx, mut); writeErr != nil {
 					// D-14: Persistent write error → DLQ, don't stall
-					publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr)
-					if ackErr := msg.Ack(); ackErr != nil {
-						logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
+					if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
+						logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+						if nakErr := msg.Nak(); nakErr != nil {
+							logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+						}
+					} else {
+						if ackErr := msg.Ack(); ackErr != nil {
+							logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
+						}
 					}
 					logger.Error("write failed, sent to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
 					continue

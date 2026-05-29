@@ -57,8 +57,7 @@ type Engine struct {
 	httpServer *http.Server         // HTTP query server
 	queryPort  int                  // HTTP server port (default 8080)
 	embedNode  *embed.Node          // non-nil when using embedded NATS (NewEmbedded)
-	drainChans []chan struct{}      // per-view drain signals for graceful consumer shutdown
-	storeDir   string               // embedded NATS store dir override (via WithNATSOptions)
+	drainChans []chan struct{} // per-view drain signals for graceful consumer shutdown
 }
 
 // Option configures the Engine.
@@ -99,16 +98,6 @@ func WithQueryPort(port int) Option {
 	return func(e *Engine) {
 		if port > 0 {
 			e.queryPort = port
-		}
-	}
-}
-
-// WithNATSOptions configures the embedded NATS server options.
-// Currently supports setting the JetStream store directory.
-func WithNATSOptions(storeDir string) Option {
-	return func(e *Engine) {
-		if storeDir != "" {
-			e.storeDir = storeDir
 		}
 	}
 }
@@ -224,6 +213,7 @@ func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 //
 // Start is idempotent — calling Start on an already-started engine returns
 // ErrAlreadyStarted.
+// On failure, all partially-created resources are cleaned up (FIX-MAT-03).
 func (e *Engine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -232,9 +222,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		return ErrAlreadyStarted
 	}
 
-	// 1. Initialize KV bucket
-	var err error
-	e.kv, err = kv.InitBucket(ctx, e.js, 1)
+	// 1. Initialize KV bucket (local — assigned to e.kv only on success)
+	kvb, err := kv.InitBucket(ctx, e.js, 1)
 	if err != nil {
 		return fmt.Errorf("initializing KV bucket: %w", err)
 	}
@@ -249,23 +238,22 @@ func (e *Engine) Start(ctx context.Context) error {
 	ctx, e.cancel = context.WithCancel(ctx)
 
 	// 4. Create drain channels and launch materializers
-	e.drainChans = make([]chan struct{}, len(e.cfg.Views))
-	for i := range e.cfg.Views {
-		vc := e.cfg.Views[i] // copy to avoid loop variable capture
-		drainCh := make(chan struct{})
-		e.drainChans[i] = drainCh
+	drainChans := make([]chan struct{}, len(e.cfg.Views))
 
-		// Store schema in KV (non-fatal if it fails)
+	for i := range e.cfg.Views {
+		vc := e.cfg.Views[i]
+		drainCh := make(chan struct{})
+		drainChans[i] = drainCh
+
 		schema := vc.BuildSchema()
-		if storeErr := kv.StoreSchema(ctx, e.kv, vc.Name, schema); storeErr != nil {
+		if storeErr := kv.StoreSchema(ctx, kvb, vc.Name, schema); storeErr != nil {
 			e.logger.Warn("failed to store schema in KV", "view", vc.Name, "error", storeErr)
 		}
 
-		// Launch materializer goroutine with drain channel
 		e.wg.Add(1)
 		go func(viewCfg natsqlpkg.ViewConfig, dc chan struct{}) {
 			defer e.wg.Done()
-			if runErr := materialize.Run(ctx, e.js, &viewCfg, e.kv, dlqStream, e.logger, dc); runErr != nil {
+			if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, dlqStream, e.logger, dc); runErr != nil {
 				if !errors.Is(runErr, context.Canceled) {
 					e.logger.Error("materializer exited with error", "view", viewCfg.Name, "error", runErr)
 				}
@@ -290,8 +278,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	router := transport.NewRouter()
 	transport.RegisterHTTPHandler(router, e)
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", e.queryPort),
-		Handler: router,
+		Addr:         fmt.Sprintf("127.0.0.1:%d", e.queryPort),
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
 	}
 	e.httpServer = httpServer
 	e.wg.Add(1)
@@ -303,6 +294,9 @@ func (e *Engine) Start(ctx context.Context) error {
 		}
 	}(httpServer, e.logger)
 
+	// All initialization succeeded — set engine state
+	e.kv = kvb
+	e.drainChans = drainChans
 	e.started = true
 	e.logger.Info("engine started", "view_count", len(e.cfg.Views))
 	return nil
@@ -380,15 +374,20 @@ func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 	e.logger.Info("executing SQL", "sql", sql)
 
 	// Ensure KV bucket is available (works before Start())
+	// Protected by mutex for thread safety (FIX-ENG-02)
+	e.mu.Lock()
 	kvb := e.kv
 	if kvb == nil {
 		var err error
 		kvb, err = kv.InitBucket(ctx, e.js, 1)
 		if err != nil {
+			e.mu.Unlock()
 			errStr := fmt.Sprintf("initializing KV bucket: %v", err)
 			return &query.QueryResult{Error: &errStr}
 		}
+		e.kv = kvb
 	}
+	e.mu.Unlock()
 
 	// Parse SQL
 	q, err := query.Parse(sql)

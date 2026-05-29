@@ -42,7 +42,8 @@ type Plan interface {
 type PKLookupPlan struct {
 	ViewName string
 	PkValue  string
-	Columns  []string // nil = all
+	Columns  []string    // nil = all
+	Where    []Condition // non-PK conditions to apply as post-filter
 }
 
 // FullScanPlan iterates all keys for a view, applies filters client-side.

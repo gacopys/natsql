@@ -3,6 +3,7 @@ package materialize
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -137,8 +138,10 @@ func TestMapRow_NestedJSONPath(t *testing.T) {
 	if mut.RowData["name"] != "Alice" {
 		t.Errorf("RowData[name] = %v, want %q", mut.RowData["name"], "Alice")
 	}
-	if mut.RowData["age"] != float64(30) {
-		t.Errorf("RowData[age] = %v (%T), want float64(30)", mut.RowData["age"], mut.RowData["age"])
+	// With UseNumber, numbers are json.Number; verify by string comparison
+	ageVal := fmt.Sprint(mut.RowData["age"])
+	if ageVal != "30" {
+		t.Errorf("RowData[age] = %v (%T), want 30", mut.RowData["age"], mut.RowData["age"])
 	}
 }
 
@@ -190,8 +193,9 @@ func TestMapRow_NumberType_ValidFloat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if mut.RowData["price"] != float64(29.99) {
-		t.Errorf("RowData[price] = %v, want 29.99", mut.RowData["price"])
+	priceVal := fmt.Sprint(mut.RowData["price"])
+	if priceVal != "29.99" {
+		t.Errorf("RowData[price] = %v (%T), want 29.99", mut.RowData["price"], mut.RowData["price"])
 	}
 }
 

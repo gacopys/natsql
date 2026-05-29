@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -22,8 +23,10 @@ type QueryHandler interface {
 // Returns the subscription for lifecycle management.
 func RegisterNATSHandler(nc *nats.Conn, handler QueryHandler) (*nats.Subscription, error) {
 	sub, err := nc.Subscribe("natsql.query", func(msg *nats.Msg) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		sql := string(msg.Data)
-		result := handler.Query(context.Background(), sql)
+		result := handler.Query(ctx, sql)
 		data, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			errResp := fmt.Sprintf(`{"results":[],"error":"internal error: %s"}`, marshalErr.Error())
