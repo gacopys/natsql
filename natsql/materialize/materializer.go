@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -14,6 +16,8 @@ import (
 	natsql "natsql/cfg"
 	kvpkg "natsql/kv"
 )
+
+const materializerWorkers = 16
 
 // DLQStreamName is the name of the dead-letter queue stream.
 const DLQStreamName = "natsql-dlq"
@@ -176,79 +180,95 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 		}()
 	}
 
-	// 6. Start heartbeat ticker (every 60 seconds)
-	heartbeat := time.NewTicker(60 * time.Second)
-	defer heartbeat.Stop()
+	// 6. Worker pool: parallel processing pipeline
+	var (
+		eventCount atomic.Int64
+		workerWg  sync.WaitGroup
+	)
+	workerWg.Add(materializerWorkers)
 
-	// 7. Processing loop
-	var eventCount int64
-
-	for {
-		select {
-		case msg, ok := <-msgCh:
-			if !ok {
-				// Bridge goroutine exited
-				return ctx.Err()
+	for i := 0; i < materializerWorkers; i++ {
+		go func() {
+			defer workerWg.Done()
+			for msg := range msgCh {
+				eventCount.Add(1)
+				processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
 			}
-			eventCount++
+		}()
+	}
 
-			// Map event → RowMutation
-			mut, mapErr := mapper.MapRow(msg)
-			if mapErr != nil {
-				if errors.Is(mapErr, ErrMalformedEvent) {
-					// D-12: Malformed → DLQ + ack (or Nak on DLQ failure)
-					if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr); dlqErr != nil {
-						logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
-						if nakErr := msg.Nak(); nakErr != nil {
-							logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
-						}
-					} else {
-						if ackErr := msg.Ack(); ackErr != nil {
-							logger.Warn("failed to ack malformed event", "seq", getMsgSeq(msg), "error", ackErr)
-						}
-					}
-					logger.Warn("skipped malformed event", "seq", getMsgSeq(msg), "error", mapErr)
-					continue
-				}
-				// Unknown mapper error → Nak for retry
-				if nakErr := msg.Nak(); nakErr != nil {
-					logger.Warn("failed to nak event", "seq", getMsgSeq(msg), "error", nakErr)
-				}
-				logger.Error("unexpected mapper error", "seq", getMsgSeq(msg), "error", mapErr)
-				continue
+	// 7. Heartbeat logs progress every 60s in background
+	go func() {
+		heartbeat := time.NewTicker(60 * time.Second)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case <-heartbeat.C:
+				logger.Info("materializer heartbeat", "view", viewCfg.Name, "events_processed", eventCount.Load())
+			case <-ctx.Done():
+				return
 			}
-
-			// Apply to KV
-			if mut != nil {
-				if writeErr := writer.Apply(ctx, mut); writeErr != nil {
-					// D-14: Persistent write error → DLQ, don't stall
-					if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
-						logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
-						if nakErr := msg.Nak(); nakErr != nil {
-							logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
-						}
-					} else {
-						if ackErr := msg.Ack(); ackErr != nil {
-							logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
-						}
-					}
-					logger.Error("write failed, sent to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
-					continue
-				}
-			}
-
-			// D-11: Ack only after successful KV write
-			if ackErr := msg.Ack(); ackErr != nil {
-				logger.Warn("failed to ack processed event", "seq", getMsgSeq(msg), "error", ackErr)
-			}
-
-		case <-heartbeat.C:
-			logger.Info("materializer heartbeat", "view", viewCfg.Name, "events_processed", eventCount)
-
-		case <-ctx.Done():
-			logger.Info("materializer shutting down", "view", viewCfg.Name, "events_processed", eventCount)
-			return ctx.Err()
 		}
+	}()
+
+	// Wait for all workers to finish (msgCh closes when consumer exits)
+	workerWg.Wait()
+	logger.Info("materializer shutting down", "view", viewCfg.Name, "events_processed", eventCount.Load())
+	return ctx.Err()
+}
+
+// processEvent handles one event: map → write/error → ack/Nak.
+func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, logger *slog.Logger) {
+	mut, mapErr := mapper.MapRow(msg)
+	if mapErr != nil {
+		if errors.Is(mapErr, ErrMalformedEvent) {
+			if ctx.Err() != nil {
+				msg.Nak()
+				return
+			}
+			if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr); dlqErr != nil {
+				logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+				if nakErr := msg.Nak(); nakErr != nil {
+					logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+				}
+			} else {
+				if ackErr := msg.Ack(); ackErr != nil {
+					logger.Warn("failed to ack malformed event", "seq", getMsgSeq(msg), "error", ackErr)
+				}
+			}
+			logger.Warn("skipped malformed event", "seq", getMsgSeq(msg), "error", mapErr)
+			return
+		}
+		if nakErr := msg.Nak(); nakErr != nil {
+			logger.Warn("failed to nak event", "seq", getMsgSeq(msg), "error", nakErr)
+		}
+		logger.Error("unexpected mapper error", "seq", getMsgSeq(msg), "error", mapErr)
+		return
+	}
+
+	if mut != nil {
+		if writeErr := writer.Apply(ctx, mut); writeErr != nil {
+			if ctx.Err() != nil {
+				msg.Nak()
+				return
+			}
+			if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
+				logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+				if nakErr := msg.Nak(); nakErr != nil {
+					logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+				}
+			} else {
+				if ackErr := msg.Ack(); ackErr != nil {
+					logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
+				}
+			}
+			logger.Error("write failed, sent to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
+			return
+		}
+	}
+
+	if ackErr := msg.Ack(); ackErr != nil {
+		logger.Warn("failed to ack processed event", "seq", getMsgSeq(msg), "error", ackErr)
 	}
 }
 
