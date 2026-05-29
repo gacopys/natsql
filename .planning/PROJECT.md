@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A NATS-native materialized view engine — **shipped v1.0**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS.
+A NATS-native materialized view engine — **shipped v1.1**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS. Now hardened with type-safe query filters, PK sanitization, DLQ failure propagation, and CI-backed testing.
 
 For NATS developers building event-driven systems who need simple queryable state without running Postgres, Redis, or Kafka alongside their NATS cluster.
 
@@ -10,18 +10,9 @@ For NATS developers building event-driven systems who need simple queryable stat
 
 A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
-## Current Milestone: v1.1 Tech Debt Cleanup
-
-**Goal:** Eliminate all known bugs, races, and hardening gaps from the v1.0 code reviews.
-
-**Target fixes:**
-- Query Engine: PK filter bug, data race, type comparison, bool literal parsing
-- Materializer: PK value sanitization, DLQ error handling, partial init, float64 precision
-- Transport & Hardening: HTTP timeouts, body limit, NATS context, dead code removal
-
 ## Requirements
 
-### Validated (v1.0)
+### Validated
 
 - ✓ **DECL-01**: User can define a materialized view in a YAML/JSON config — v1.0
 - ✓ **STREAM-01**: Materializer consumes JetStream events (ordered, durable) and maintains KV bucket state — v1.0
@@ -33,21 +24,22 @@ A developer can define a materialized view from a stream, publish events, and qu
 - ✓ **EMBED-02**: Standalone server binary with HTTP + NATS query endpoints — v1.0
 - ✓ **EMBED-03**: Works with embedded NATS (single-node) — v1.0
 - ✓ **RESIL-01**: Graceful handling of malformed events (log + skip, don't crash) — v1.0
+- ✓ **FIX-ENG-01**: PK equality query applies non-PK WHERE conditions as post-filter — v1.1
+- ✓ **FIX-ENG-02**: Engine.Query is safe for concurrent access (data race fixed) — v1.1
+- ✓ **FIX-ENG-03**: filterRow uses type-aware comparison instead of fmt.Sprint — v1.1
+- ✓ **FIX-ENG-04**: SQL parser accepts boolean literals (true/false) in WHERE — v1.1
+- ✓ **FIX-MAT-01**: PK values are sanitized against KV key special characters — v1.1
+- ✓ **FIX-MAT-02**: DLQ publish failures are surfaced and block event acknowledgement — v1.1
+- ✓ **FIX-MAT-03**: Engine.Start partial-init path cleans up correctly on failure — v1.1
+- ✓ **FIX-MAT-04**: JSON integer values >2^53 preserve full precision — v1.1
+- ✓ **FIX-TRN-01**: HTTP server has read/write/idle timeouts configured — v1.1
+- ✓ **FIX-TRN-02**: HTTP query endpoint enforces request body size limit — v1.1
+- ✓ **FIX-TRN-03**: NATS query handler uses bounded context with timeout — v1.1
+- ✓ **FIX-TRN-04**: Dead code, unused parameters, and test flakiness cleaned up — v1.1
 
-### Active (v1.1)
+### Active
 
-- [ ] **FIX-ENG-01**: PK equality query applies non-PK WHERE conditions as post-filter
-- [ ] **FIX-ENG-02**: Engine.Query is safe for concurrent access (data race fixed)
-- [ ] **FIX-ENG-03**: filterRow uses type-aware comparison instead of fmt.Sprint
-- [ ] **FIX-ENG-04**: SQL parser accepts boolean literals (true/false) in WHERE
-- [ ] **FIX-MAT-01**: PK values are sanitized against KV key special characters
-- [ ] **FIX-MAT-02**: DLQ publish failures are surfaced and block event acknowledgement
-- [ ] **FIX-MAT-03**: Engine.Start partial-init path cleans up correctly on failure
-- [ ] **FIX-MAT-04**: JSON integer values >2^53 preserve full precision
-- [ ] **FIX-TRN-01**: HTTP server has read/write/idle timeouts configured
-- [ ] **FIX-TRN-02**: HTTP query endpoint enforces request body size limit
-- [ ] **FIX-TRN-03**: NATS query handler uses bounded context with timeout
-- [ ] **FIX-TRN-04**: Dead code, unused parameters, and test flakiness cleaned up
+(Next milestone — to be defined)
 
 ### Deferred (Future Milestones)
 
@@ -72,15 +64,17 @@ This project was born from a conversation about why full PostgreSQL protocol on 
 
 natsql generalizes the pattern of "stream → KV" materialization into a configurable engine, inspired by reference implementations in the NATS ecosystem.
 
-## Current State (v1.0)
+## Current State (v1.1)
 
-Shipped **2026-05-28** with 7,339 LOC across 29 Go source files.
+Shipped **2026-05-29** with ~9,400 LOC across 40+ Go source files.
 
 **Architecture:** 3-component model — Materializer (stream→KV), Query Engine (SQL→KV reads), Transport (NATS/HTTP/Embed).
 
-**Tech stack:** Go, NATS JetStream KV, vitess sqlparser, chi HTTP router, Cobra CLI.
+**Tech stack:** Go, NATS JetStream KV, vitess sqlparser, chi HTTP router, Cobra CLI, GitHub Actions CI.
 
 **Deployment modes:** Go library (import natsql), standalone binary with embedded NATS, standalone binary connecting to external NATS cluster.
+
+**v1.1 improvements:** All known bugs and hardening gaps from v1.0 code reviews eliminated — PK post-filter, data race fix, type-safe WHERE comparison, boolean literal support, PK sanitization, DLQ error propagation, HTTP timeouts/body limits, NATS bounded context, 750-line black-box test suite, GitHub Actions CI pipeline.
 
 ## Constraints
 
@@ -106,4 +100,4 @@ Shipped **2026-05-28** with 7,339 LOC across 29 Go source files.
 | Cobra CLI | Already in monorepo, NATS ecosystem standard | ✓ Good |
 
 ---
-*Last updated: 2026-05-29 — v1.1 milestone started*
+*Last updated: 2026-05-29 — after v1.1 milestone completed*
