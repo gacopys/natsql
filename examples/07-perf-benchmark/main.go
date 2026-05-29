@@ -27,12 +27,16 @@ import (
 	"log"
 	"math/rand"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"natsql"
 )
+
+const numPublishers = 64
 
 func main() {
 	ctx := context.Background()
@@ -79,46 +83,81 @@ func main() {
 	}
 	fmt.Println("✓ Engine started\n")
 
-	// ── Step 2: Generate and publish 10,000 events ──────────────
+	// ── Step 2: Generate and publish events via parallel publishers ─
 	const totalEvents = 1000000
 	fmt.Printf("Publishing %d events...\n", totalEvents)
 
-	rng := rand.New(rand.NewSource(42))
 	cities := []string{"Berlin", "London", "Tokyo", "New York", "Paris", "Sydney", "Toronto", "Mumbai"}
 	firstNames := []string{"Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy",
 		"Karl", "Linda", "Mike", "Nancy", "Oscar", "Pam", "Quinn", "Rob", "Sara", "Tom"}
 
 	publishStart := time.Now()
-	batchSize := 200
+	done := make(chan struct{})
+	var published atomic.Int64
 
-	for i := 0; i < totalEvents; i += batchSize {
-		end := i + batchSize
-		if end > totalEvents {
+	// Progress reporter
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n := published.Load()
+				pct := float64(n) * 100 / float64(totalEvents)
+				elapsed := time.Since(publishStart).Seconds()
+				rate := float64(0)
+				if elapsed > 0 {
+					rate = float64(n) / elapsed
+				}
+				fmt.Printf("\r  Published %d / %d (%.1f%%) — %.0f msg/s    ", n, totalEvents, pct, rate)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	var pubWg sync.WaitGroup
+	pubWg.Add(numPublishers)
+
+	eventsPerWorker := totalEvents / numPublishers
+
+	for w := 0; w < numPublishers; w++ {
+		start := w * eventsPerWorker
+		end := start + eventsPerWorker
+		if w == numPublishers-1 {
 			end = totalEvents
 		}
 
-		pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		go func(start, end int) {
+			defer pubWg.Done()
+			rng := rand.New(rand.NewSource(42 + int64(w)))
+			pubCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
 
-		for j := i; j < end; j++ {
-			uid := fmt.Sprintf("user-%06d", j)
-			name := firstNames[rng.Intn(len(firstNames))]
-			age := rng.Intn(70) + 18
-			city := cities[rng.Intn(len(cities))]
-			email := fmt.Sprintf("%s.%s@example.com", strings.ToLower(name), uid)
-			active := rng.Intn(2) == 0
+			for j := start; j < end; j++ {
+				uid := fmt.Sprintf("user-%06d", j)
+				name := firstNames[rng.Intn(len(firstNames))]
+				age := rng.Intn(70) + 18
+				city := cities[rng.Intn(len(cities))]
+				email := fmt.Sprintf("%s.%s@example.com", strings.ToLower(name), uid)
+				active := rng.Intn(2) == 0
 
-			event := fmt.Sprintf(
-				`{"id":%q,"name":%q,"email":%q,"age":%d,"city":%q,"active":%t}`,
-				uid, name, email, age, city, active,
-			)
+				event := fmt.Sprintf(
+					`{"id":%q,"name":%q,"email":%q,"age":%d,"city":%q,"active":%t}`,
+					uid, name, email, age, city, active,
+				)
 
-			if _, err := js.Publish(pubCtx, "events.user-created", []byte(event)); err != nil {
-				cancel()
-				log.Fatalf("Publish event %d: %v", j, err)
+				if _, err := js.Publish(pubCtx, "events.user-created", []byte(event)); err != nil {
+					log.Fatalf("Publish event %d: %v", j, err)
+				}
+				published.Add(1)
 			}
-		}
-		cancel()
+		}(start, end)
 	}
+
+	pubWg.Wait()
+	close(done)
+	fmt.Printf("\r  Published %d / %d (100.0%%) — done.          \n", totalEvents, totalEvents)
 	publishElapsed := time.Since(publishStart)
 	fmt.Printf("  Published %d events in %v (%.0f msg/s)\n\n", totalEvents, publishElapsed,
 		float64(totalEvents)/publishElapsed.Seconds())
