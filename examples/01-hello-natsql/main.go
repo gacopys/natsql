@@ -24,7 +24,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql"
+	"github.com/gacopys/natsql"
 )
 
 func main() {

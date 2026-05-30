@@ -6,7 +6,7 @@ Demonstrates the `natsql server` standalone binary.
 
 Build the natsql binary first:
 ```bash
-cd ../../natsql && go build -o ../natsql-server ./cmd/natsql/
+cd ../.. && go build -o examples/06-cli-server/natsql-server ./cmd/natsql/
 ```
 
 ## Run (embedded NATS — zero infrastructure)
@@ -14,6 +14,8 @@ cd ../../natsql && go build -o ../natsql-server ./cmd/natsql/
 ```bash
 ./natsql-server server --config=config.yaml --embedded
 ```
+
+(From repo root: `go run ./cmd/natsql/ server --config=examples/06-cli-server/config.yaml --embedded`)
 
 The server starts with embedded NATS on port 4222 and HTTP on port 8080.
 

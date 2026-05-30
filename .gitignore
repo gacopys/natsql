@@ -1,2 +1,10 @@
 .idea
 example-perf
+data/
+*.out
+example-*
+example-hello
+example-composite
+example-malformed
+example-views
+example-library

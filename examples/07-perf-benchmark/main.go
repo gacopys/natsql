@@ -33,7 +33,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql"
+	"github.com/gacopys/natsql"
 )
 
 const numPublishers = 64

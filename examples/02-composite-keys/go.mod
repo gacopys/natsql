@@ -3,8 +3,8 @@ module example-composite
 go 1.26.2
 
 require (
+	github.com/gacopys/natsql v0.0.0
 	github.com/nats-io/nats.go v1.51.0
-	natsql v0.0.0
 )
 
 require (
@@ -32,4 +32,4 @@ require (
 	vitess.io/vitess v0.24.1 // indirect
 )
 
-replace natsql => ../../natsql
+replace github.com/gacopys/natsql => ../../

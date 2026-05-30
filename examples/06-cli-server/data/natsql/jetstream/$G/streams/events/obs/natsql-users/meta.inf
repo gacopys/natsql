@@ -1,1 +1,0 @@
-{"Created":"2026-05-28T20:26:29.548302841Z","Name":"natsql-users","durable_name":"natsql-users","name":"natsql-users","deliver_policy":"all","ack_policy":"explicit","ack_wait":30000000000,"max_deliver":10,"replay_policy":"instant","max_waiting":512,"max_ack_pending":100,"inactive_threshold":3600000000000,"num_replicas":0,"metadata":{"_nats.req.level":"0"}}
