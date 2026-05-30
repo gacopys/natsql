@@ -1,5 +1,6 @@
 .idea
 example-perf
+data/
 *.out
 example-*
 example-hello
