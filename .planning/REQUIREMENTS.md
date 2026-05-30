@@ -73,37 +73,37 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| VER-01 | TBD | Pending |
-| FND-01 | TBD | Pending |
-| FND-02 | TBD | Pending |
-| FND-03 | TBD | Pending |
-| MAT-01 | TBD | Pending |
-| MAT-02 | TBD | Pending |
-| MAT-03 | TBD | Pending |
-| MAT-04 | TBD | Pending |
-| QENG-01 | TBD | Pending |
-| QENG-02 | TBD | Pending |
-| QENG-03 | TBD | Pending |
-| QENG-04 | TBD | Pending |
-| LIFE-01 | TBD | Pending |
-| LIFE-02 | TBD | Pending |
-| TRN-01 | TBD | Pending |
-| TRN-02 | TBD | Pending |
-| TRN-03 | TBD | Pending |
-| TRN-04 | TBD | Pending |
-| CLN-01 | TBD | Pending |
-| CLN-02 | TBD | Pending |
-| CLN-03 | TBD | Pending |
-| CLN-04 | TBD | Pending |
-| CLN-05 | TBD | Pending |
-| CLN-06 | TBD | Pending |
-| CLN-07 | TBD | Pending |
-| CLN-08 | TBD | Pending |
+| VER-01 | Phase 8 | Pending |
+| FND-01 | Phase 8 | Pending |
+| FND-02 | Phase 8 | Pending |
+| FND-03 | Phase 8 | Pending |
+| MAT-01 | Phase 9 | Pending |
+| MAT-02 | Phase 9 | Pending |
+| MAT-03 | Phase 9 | Pending |
+| MAT-04 | Phase 9 | Pending |
+| QENG-01 | Phase 10 | Pending |
+| QENG-02 | Phase 10 | Pending |
+| QENG-03 | Phase 10 | Pending |
+| QENG-04 | Phase 10 | Pending |
+| LIFE-01 | Phase 9 | Pending |
+| LIFE-02 | Phase 9 | Pending |
+| TRN-01 | Phase 10 | Pending |
+| TRN-02 | Phase 10 | Pending |
+| TRN-03 | Phase 10 | Pending |
+| TRN-04 | Phase 10 | Pending |
+| CLN-01 | Phase 11 | Pending |
+| CLN-02 | Phase 11 | Pending |
+| CLN-03 | Phase 11 | Pending |
+| CLN-04 | Phase 11 | Pending |
+| CLN-05 | Phase 11 | Pending |
+| CLN-06 | Phase 11 | Pending |
+| CLN-07 | Phase 11 | Pending |
+| CLN-08 | Phase 11 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 26 total
-- Mapped to phases: 0
-- Unmapped: 26 ⚠️
+- Mapped to phases: 26
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-31*
