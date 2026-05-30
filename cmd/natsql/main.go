@@ -22,7 +22,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 
-	"natsql"
+"github.com/gacopys/natsql"
 )
 
 var rootCmd = &cobra.Command{

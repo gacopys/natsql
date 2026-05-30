@@ -13,8 +13,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
-	"natsql/query"
-	"natsql/transport"
+	"github.com/gacopys/natsql/query"
+	"github.com/gacopys/natsql/transport"
 )
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
 //
 // Basic usage for Go library consumers:
 //
-//	import "natsql"
+//	import "github.com/gacopys/natsql"
 //
 //	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
 //	if err != nil { ... }
@@ -25,9 +25,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql/embed"
-	"natsql/engine"
-	"natsql/query"
+	"github.com/gacopys/natsql/embed"
+	"github.com/gacopys/natsql/engine"
+	"github.com/gacopys/natsql/query"
 )
 
 // Engine wraps the internal engine with lifecycle ownership (D-48).

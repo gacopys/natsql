@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"gopkg.in/yaml.v3"
 
-	"natsql/kv"
+	"github.com/gacopys/natsql/kv"
 )
 
 // ColumnType represents the type of a column in a materialized view.

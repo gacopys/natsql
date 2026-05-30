@@ -25,7 +25,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
-	natsql "natsql"
+	natsql "github.com/gacopys/natsql"
 )
 
 // testRow is a row in the materialized view, keyed by user_id.

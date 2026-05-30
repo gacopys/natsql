@@ -1,4 +1,4 @@
-module natsql
+module github.com/gacopys/natsql
 
 go 1.26.2
 

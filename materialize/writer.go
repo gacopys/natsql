@@ -7,7 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"natsql/kv"
+	"github.com/gacopys/natsql/kv"
 )
 
 // Writer handles KV row writes for a materialized view.

@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
-	"natsql/kv"
+	"github.com/gacopys/natsql/kv"
 )
 
 // ---------------------------------------------------------------------------

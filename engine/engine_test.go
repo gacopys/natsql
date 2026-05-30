@@ -16,10 +16,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats-server/v2/server"
 
-	natsql "natsql"
-	natsqlpkg "natsql/cfg"
-	"natsql/engine"
-	"natsql/kv"
+	natsql "github.com/gacopys/natsql"
+	natsqlpkg "github.com/gacopys/natsql/cfg"
+	"github.com/gacopys/natsql/engine"
+	"github.com/gacopys/natsql/kv"
 )
 
 // TestEngineEndToEnd verifies the full write path:

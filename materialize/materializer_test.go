@@ -12,8 +12,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "natsql/cfg"
-	"natsql/kv"
+	natsql "github.com/gacopys/natsql/cfg"
+	"github.com/gacopys/natsql/kv"
 )
 
 func TestMaterializer_ValidEventEndToEnd(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"natsql/query"
+	"github.com/gacopys/natsql/query"
 )
 
 // QueryHandler is the interface transports use to execute queries.

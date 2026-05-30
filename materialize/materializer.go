@@ -13,8 +13,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "natsql/cfg"
-	kvpkg "natsql/kv"
+	natsql "github.com/gacopys/natsql/cfg"
+	kvpkg "github.com/gacopys/natsql/kv"
 )
 
 const materializerWorkers = 16

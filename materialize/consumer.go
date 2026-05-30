@@ -7,7 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "natsql/cfg"
+	natsql "github.com/gacopys/natsql/cfg"
 )
 
 // ConsumerName returns the durable consumer name for a view.

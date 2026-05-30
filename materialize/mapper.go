@@ -10,8 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "natsql/cfg"
-	"natsql/kv"
+	natsql "github.com/gacopys/natsql/cfg"
+	"github.com/gacopys/natsql/kv"
 )
 
 const maxNestingDepth = 8 // T-02-02: limit JSON path depth
