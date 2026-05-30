@@ -14,15 +14,13 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: natsql/go.mod
+          go-version-file: go.mod
 
       - name: Build
         run: go build ./...
-        working-directory: natsql
 
       - name: Vet
         run: go vet ./...
-        working-directory: natsql
 
       - name: Test + coverage
         run: |
@@ -30,14 +28,13 @@ jobs:
           echo ""
           echo "━━━ Coverage per function ━━━"
           go tool cover -func=coverage.out
-        working-directory: natsql
 
       - name: Build examples
         run: |
           for dir in examples/*/; do
             if [ -f "$dir/go.mod" ]; then
               echo "Building $dir..."
-              (cd "$dir" && go build ./...)
+              (cd "$dir" && go build .)
             else
               echo "Skipping $dir (no go.mod)"
             fi
