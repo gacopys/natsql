@@ -10,6 +10,16 @@ For NATS developers building event-driven systems who need simple queryable stat
 
 A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
+## Current Milestone: v1.2 Code Review Remediation
+
+**Goal:** Verify all 25 findings from the comprehensive code review (cr.md), confirm or dismiss each, and fix all confirmed correctness issues — achieving 100% project correctness.
+
+**Target features:**
+- Verify all 25 code review findings against source code (CR-01 through CR-25)
+- Fix critical correctness bugs: concurrent state corruption, PK sanitization inconsistency, contradictory PK predicates
+- Fix high-severity issues: meta field leakage, unsupported SQL rejection, config validation, HTTP port ignored, startup error propagation, precision loss, transient failure handling, consumer durability, scan architecture, stream mutation
+- Fix medium/low issues: `$.field` prefix support, index config clarity, delete semantics, error message correctness, example hygiene, dead code removal, gofmt formatting, test helper deduplication, docs sync
+
 ## Requirements
 
 ### Validated
@@ -39,7 +49,10 @@ A developer can define a materialized view from a stream, publish events, and qu
 
 ### Active
 
-(Next milestone — to be defined)
+- [ ] **CORR-01**: Verify each finding in code review report (cr.md) — confirm or dismiss with reason
+- [ ] **CORR-02**: Fix all confirmed critical and high-severity findings
+- [ ] **CORR-03**: Fix all confirmed medium and low-severity findings
+- [ ] **CORR-04**: Ensure 100% project correctness — all known correctness bugs eliminated
 
 ### Deferred (Future Milestones)
 
@@ -98,6 +111,23 @@ Shipped **2026-05-29** with ~9,400 LOC across 40+ Go source files.
 | vitess sqlparser | Battle-tested SQL parser, handles all edge cases | ✓ Good |
 | Single KV bucket | Simpler to manage, fewer NATS resources | ✓ Good |
 | Cobra CLI | Already in monorepo, NATS ecosystem standard | ✓ Good |
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
 
 ---
-*Last updated: 2026-05-29 — after v1.1 milestone completed*
+
+*Last updated: 2026-05-31 — after v1.2 milestone started*
