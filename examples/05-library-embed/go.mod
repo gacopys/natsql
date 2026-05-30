@@ -3,7 +3,7 @@ module example-library
 go 1.26.2
 
 require (
-	github.com/gacopys/natsql v0.0.0
+	github.com/gacopys/natsql v1.0.0
 	github.com/nats-io/nats.go v1.51.0
 )
 
