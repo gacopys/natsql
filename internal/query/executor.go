@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/kv"
+	"github.com/gacopys/natsql/internal/kv"
 )
 
 const fullScanWorkers = 16

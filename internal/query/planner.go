@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gacopys/natsql/kv"
+	"github.com/gacopys/natsql/internal/kv"
 )
 
 // BuildPlan creates an execution plan from a validated query.

@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/kv"
+	"github.com/gacopys/natsql/internal/kv"
 )
 
 func TestNewWriter(t *testing.T) {

@@ -19,11 +19,11 @@ import (
 	"log"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/gacopys/natsql"
-	"github.com/gacopys/natsql/embed"
 )
 
 func main() {
@@ -35,13 +35,24 @@ func main() {
 	fmt.Println()
 
 	// Start your own NATS server (or connect to existing)
-	node, err := embed.StartNode(embed.NodeConfig{})
+	srv, err := natsserver.NewServer(&natsserver.Options{
+		Host:     "127.0.0.1",
+		Port:     -1,
+		JetStream: true,
+		NoLog:    true,
+		NoSigs:   true,
+	})
 	if err != nil {
-		log.Fatalf("StartNode: %v", err)
+		log.Fatalf("NewServer: %v", err)
 	}
-	defer node.Shutdown()
+	go srv.Start()
+	if !srv.ReadyForConnections(10 * time.Second) {
+		srv.Shutdown()
+		log.Fatal("Server not ready")
+	}
+	defer srv.Shutdown()
 
-	nc, err := nats.Connect(node.ClientURL())
+	nc, err := nats.Connect(srv.ClientURL())
 	if err != nil {
 		log.Fatalf("Connect: %v", err)
 	}

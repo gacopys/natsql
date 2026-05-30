@@ -22,12 +22,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsqlpkg "github.com/gacopys/natsql/cfg"
-	"github.com/gacopys/natsql/embed"
-	"github.com/gacopys/natsql/kv"
-	"github.com/gacopys/natsql/materialize"
-	"github.com/gacopys/natsql/query"
-	"github.com/gacopys/natsql/transport"
+	natsqlpkg "github.com/gacopys/natsql/internal/cfg"
+	"github.com/gacopys/natsql/internal/embed"
+	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/internal/materialize"
+	"github.com/gacopys/natsql/internal/query"
+	"github.com/gacopys/natsql/internal/transport"
 )
 
 // Sentinel errors for Engine lifecycle operations.

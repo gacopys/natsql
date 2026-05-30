@@ -1,7 +1,7 @@
 package natsql
 
 import (
-	"github.com/gacopys/natsql/cfg"
+	"github.com/gacopys/natsql/internal/cfg"
 )
 
 // Config types re-exported from the cfg sub-package.

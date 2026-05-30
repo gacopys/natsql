@@ -25,9 +25,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/embed"
-	"github.com/gacopys/natsql/engine"
-	"github.com/gacopys/natsql/query"
+	"github.com/gacopys/natsql/internal/embed"
+	"github.com/gacopys/natsql/internal/engine"
+	"github.com/gacopys/natsql/internal/query"
 )
 
 // Engine wraps the internal engine with lifecycle ownership (D-48).

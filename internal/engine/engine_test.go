@@ -17,9 +17,9 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 
 	natsql "github.com/gacopys/natsql"
-	natsqlpkg "github.com/gacopys/natsql/cfg"
-	"github.com/gacopys/natsql/engine"
-	"github.com/gacopys/natsql/kv"
+	natsqlpkg "github.com/gacopys/natsql/internal/cfg"
+	"github.com/gacopys/natsql/internal/engine"
+	"github.com/gacopys/natsql/internal/kv"
 )
 
 // TestEngineEndToEnd verifies the full write path:
