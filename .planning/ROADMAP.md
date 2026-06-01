@@ -83,9 +83,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 09-01-PLAN.md — Remove worker pool, sequential ordered processing (MAT-01)
-- [ ] 09-02-PLAN.md — Error classification, consumer durability, BatchSize rename (MAT-02, MAT-03, MAT-04)
-- [ ] 09-03-PLAN.md — HTTP port from config, startup error propagation (LIFE-01, LIFE-02)
+- [x] 09-01-PLAN.md — Remove worker pool, sequential ordered processing (MAT-01)
+- [x] 09-02-PLAN.md — Error classification, consumer durability, BatchSize rename (MAT-02, MAT-03, MAT-04)
+- [x] 09-03-PLAN.md — HTTP port from config, startup error propagation (LIFE-01, LIFE-02)
 
 ### Phase 10: Query Engine & Transport
 
