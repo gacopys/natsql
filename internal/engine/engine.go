@@ -135,7 +135,10 @@ func New(nc *nats.Conn, js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...O
 		nc:        nc,
 		cfg:       cfg,
 		logger:    slog.Default(),
-		queryPort: 8080,
+		queryPort: cfg.HTTP.Port,
+	}
+	if e.queryPort == 0 {
+		e.queryPort = 8080 // fallback default (D-13)
 	}
 
 	for _, opt := range opts {
@@ -191,8 +194,11 @@ func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 		nc:        nc,
 		cfg:       cfg,
 		logger:    slog.Default(),
-		queryPort: 8080,
+		queryPort: cfg.HTTP.Port,
 		embedNode: node,
+	}
+	if e.queryPort == 0 {
+		e.queryPort = 8080 // fallback default (D-13)
 	}
 
 	for _, opt := range opts {
