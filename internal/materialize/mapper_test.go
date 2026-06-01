@@ -88,8 +88,8 @@ func TestMapRow_SimpleTopLevelFields(t *testing.T) {
 	if mut == nil {
 		t.Fatal("MapRow returned nil mutation")
 	}
-	if mut.PK != "abc123" {
-		t.Errorf("PK = %q, want %q", mut.PK, "abc123")
+	if len(mut.PkParts) != 1 || mut.PkParts[0] != "abc123" {
+		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"abc123"})
 	}
 	if mut.RowData["user_id"] != "abc123" {
 		t.Errorf("RowData[user_id] = %v, want %q", mut.RowData["user_id"], "abc123")
@@ -130,8 +130,8 @@ func TestMapRow_NestedJSONPath(t *testing.T) {
 	if mut == nil {
 		t.Fatal("MapRow returned nil mutation")
 	}
-	if mut.PK != "abc123" {
-		t.Errorf("PK = %q, want %q", mut.PK, "abc123")
+	if len(mut.PkParts) != 1 || mut.PkParts[0] != "abc123" {
+		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"abc123"})
 	}
 	if mut.RowData["user_id"] != "abc123" {
 		t.Errorf("RowData[user_id] = %v, want %q", mut.RowData["user_id"], "abc123")
@@ -426,8 +426,8 @@ func TestMapRow_CompositeKey_JoinedBySeparator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if mut.PK != "acme::42" {
-		t.Errorf("PK = %q, want %q", mut.PK, "acme::42")
+	if len(mut.PkParts) != 2 || mut.PkParts[0] != "acme" || mut.PkParts[1] != "42" {
+		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"acme", "42"})
 	}
 }
 
@@ -510,8 +510,8 @@ func TestMapRow_DefaultKeySeparator_Pipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if mut.PK != "acme|e1" {
-		t.Errorf("PK = %q, want %q", mut.PK, "acme|e1")
+	if len(mut.PkParts) != 2 || mut.PkParts[0] != "acme" || mut.PkParts[1] != "e1" {
+		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"acme", "e1"})
 	}
 }
 
@@ -567,10 +567,10 @@ func TestStringifyValue_Cases(t *testing.T) {
 	}
 }
 
-func TestStringifyValue_SanitizesSpecialChars(t *testing.T) {
+func TestStringifyValue_RawNoSanitization(t *testing.T) {
 	got := stringifyValue("a/b|c")
-	if got != "a_sb_pc" {
-		t.Errorf("stringifyValue with special chars = %q, want %q", got, "a_sb_pc")
+	if got != "a/b|c" {
+		t.Errorf("stringifyValue with special chars = %q, want %q", got, "a/b|c")
 	}
 }
 

@@ -107,7 +107,11 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 	}
 
 	// 3. Create writer
-	writer := NewWriter(bucket, viewCfg.Name)
+	sep := viewCfg.KeySeparator
+	if sep == "" {
+		sep = "|"
+	}
+	writer := NewWriter(bucket, viewCfg.Name, sep)
 
 	// 4. Store schema in KV
 	schema := viewCfg.BuildSchema()

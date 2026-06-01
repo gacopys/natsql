@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsql "github.com/gacopys/natsql/internal/cfg"
-	"github.com/gacopys/natsql/internal/kv"
+	kvpkg "github.com/gacopys/natsql/internal/kv"
 )
 
 const maxNestingDepth = 8 // T-02-02: limit JSON path depth
@@ -22,14 +22,11 @@ var (
 	// and should be acked + sent to DLQ. Never blocks the stream.
 	ErrMalformedEvent = fmt.Errorf("malformed event")
 
-	// ErrSkipAndAck indicates the event should be silently skipped.
-	// No error logging needed.
-	ErrSkipAndAck = fmt.Errorf("skip and ack")
 )
 
 // RowMutation represents the result of mapping one event to a row mutation.
 type RowMutation struct {
-	PK        string         // encoded primary key value
+	PkParts   []string       // raw primary key component values (not sanitized, not joined)
 	RowData   map[string]any // column name → typed value
 	StreamSeq uint64         // stream sequence from message metadata
 	Timestamp time.Time      // event timestamp from message metadata
@@ -39,7 +36,7 @@ type RowMutation struct {
 // JSON path extraction and type validation.
 type Mapper struct {
 	viewCfg *natsql.ViewConfig
-	schema  *kv.ViewSchema
+	schema  *kvpkg.ViewSchema
 }
 
 // NewMapper creates a new Mapper from a view configuration.
@@ -98,12 +95,6 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 		pkParts[i] = stringifyValue(val)
 	}
 
-	separator := m.schema.KeySeparator
-	if separator == "" {
-		separator = "|"
-	}
-	pk := strings.Join(pkParts, separator)
-
 	// 4. Extract metadata
 	meta, err := msg.Metadata()
 	if err != nil {
@@ -111,7 +102,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	}
 
 	return &RowMutation{
-		PK:        pk,
+		PkParts:   pkParts, // raw parts — no sanitization, no joining
 		RowData:   rowData,
 		StreamSeq: meta.Sequence.Stream,
 		Timestamp: meta.Timestamp,
@@ -210,28 +201,26 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 }
 
 // stringifyValue converts a typed value to its string representation
-// for use in PK construction, with sanitization for KV key safety.
+// for use in PK construction. Returns the raw string — sanitization
+// happens at the KV boundary in BuildPkKey.
 func stringifyValue(val any) string {
-	var s string
 	switch v := val.(type) {
 	case string:
-		s = v
+		return v
 	case json.Number:
-		s = v.String() // exact representation, no float64 precision loss
+		return v.String() // exact representation, no float64 precision loss
 	case float64:
-		s = strconv.FormatFloat(v, 'f', -1, 64)
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	case bool:
 		if v {
-			s = "true"
-		} else {
-			s = "false"
+			return "true"
 		}
+		return "false"
 	case time.Time:
-		s = v.Format(time.RFC3339Nano)
+		return v.Format(time.RFC3339Nano)
 	default:
-		s = fmt.Sprint(v)
+		return fmt.Sprint(v)
 	}
-	return kv.SanitizePK(s)
 }
 
 
