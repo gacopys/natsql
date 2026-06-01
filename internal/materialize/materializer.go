@@ -17,6 +17,11 @@ import (
 	kvpkg "github.com/gacopys/natsql/internal/kv"
 )
 
+// testHookProcessGoroutine is set by tests to observe which goroutine processes events.
+// When non-nil, it's called from the processing path before each processEvent call.
+// Zero overhead when nil (the standard case).
+var testHookProcessGoroutine func()
+
 const materializerWorkers = 16
 
 // DLQStreamName is the name of the dead-letter queue stream.
@@ -196,6 +201,9 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 			defer workerWg.Done()
 			for msg := range msgCh {
 				eventCount.Add(1)
+				if testHookProcessGoroutine != nil {
+					testHookProcessGoroutine()
+				}
 				processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
 			}
 		}()
