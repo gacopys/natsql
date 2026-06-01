@@ -2,6 +2,7 @@ package query
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"vitess.io/vitess/go/vt/sqlparser"
@@ -512,5 +513,90 @@ func TestQueryResultMarshalEmpty(t *testing.T) {
 	want := `{"results":[],"error":null}`
 	if got != want {
 		t.Errorf("JSON = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unsupported construct rejection tests (FND-02, CR-05)
+// ---------------------------------------------------------------------------
+
+func TestParse_RejectsDistinct(t *testing.T) {
+	_, err := Parse(`SELECT DISTINCT name FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for DISTINCT, got nil")
+	}
+	if !strings.Contains(err.Error(), "DISTINCT") {
+		t.Errorf("error should mention DISTINCT: %v", err)
+	}
+}
+
+func TestParse_RejectsOrderBy(t *testing.T) {
+	_, err := Parse(`SELECT * FROM users WHERE id = 'x' ORDER BY name`)
+	if err == nil {
+		t.Fatal("expected error for ORDER BY, got nil")
+	}
+	if !strings.Contains(err.Error(), "ORDER BY") {
+		t.Errorf("error should mention ORDER BY: %v", err)
+	}
+}
+
+func TestParse_RejectsGroupBy(t *testing.T) {
+	_, err := Parse(`SELECT name FROM users WHERE id = 'x' GROUP BY name`)
+	if err == nil {
+		t.Fatal("expected error for GROUP BY, got nil")
+	}
+	if !strings.Contains(err.Error(), "GROUP BY") {
+		t.Errorf("error should mention GROUP BY: %v", err)
+	}
+}
+
+func TestParse_RejectsHaving(t *testing.T) {
+	_, err := Parse(`SELECT name FROM users WHERE id = 'x' GROUP BY name HAVING COUNT(*) > 1`)
+	if err == nil {
+		t.Fatal("expected error for HAVING, got nil")
+	}
+	if !strings.Contains(err.Error(), "HAVING") {
+		t.Errorf("error should mention HAVING: %v", err)
+	}
+}
+
+func TestParse_RejectsAggregationCount(t *testing.T) {
+	_, err := Parse(`SELECT COUNT(*) FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for aggregation, got nil")
+	}
+}
+
+func TestParse_RejectsNonColumnSelect(t *testing.T) {
+	_, err := Parse(`SELECT 1 FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for non-column SELECT, got nil")
+	}
+}
+
+func TestParse_RejectsStringLiteralSelect(t *testing.T) {
+	_, err := Parse(`SELECT 'hello' FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for string literal SELECT, got nil")
+	}
+}
+
+func TestParse_RejectsExpressionSelect(t *testing.T) {
+	_, err := Parse(`SELECT a + b FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for expression SELECT, got nil")
+	}
+}
+
+func TestParse_ValidQueryStillWorksAfterRejection(t *testing.T) {
+	q, err := Parse(`SELECT name, age FROM users WHERE id = 'x'`)
+	if err != nil {
+		t.Fatalf("valid query rejected: %v", err)
+	}
+	if q.From != "users" {
+		t.Errorf("From = %q, want %q", q.From, "users")
+	}
+	if len(q.Select) != 2 {
+		t.Errorf("Select = %v, want 2 columns", q.Select)
 	}
 }
