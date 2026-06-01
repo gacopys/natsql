@@ -313,14 +313,20 @@ func TestExtractLimit_NonInteger(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractSelectExprs_NilExprs(t *testing.T) {
-	result := extractSelectExprs(nil)
+	result, err := extractSelectExprs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for nil exprs: %v", err)
+	}
 	if result != nil {
 		t.Errorf("expected nil for nil exprs, got %v", result)
 	}
 }
 
 func TestExtractSelectExprs_EmptyExprs(t *testing.T) {
-	result := extractSelectExprs(&sqlparser.SelectExprs{})
+	result, err := extractSelectExprs(&sqlparser.SelectExprs{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty exprs: %v", err)
+	}
 	if result != nil {
 		t.Errorf("expected nil for empty exprs, got %v", result)
 	}
@@ -551,7 +557,7 @@ func TestParse_RejectsGroupBy(t *testing.T) {
 }
 
 func TestParse_RejectsHaving(t *testing.T) {
-	_, err := Parse(`SELECT name FROM users WHERE id = 'x' GROUP BY name HAVING COUNT(*) > 1`)
+	_, err := Parse(`SELECT * FROM users WHERE id = 'x' HAVING COUNT(*) > 1`)
 	if err == nil {
 		t.Fatal("expected error for HAVING, got nil")
 	}
