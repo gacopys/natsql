@@ -185,6 +185,48 @@ func (cfg *Config) Validate() error {
 		if !hasPK {
 			errs = append(errs, fmt.Sprintf("%s: at least one column must have primary_key=true", prefix))
 		}
+
+		// CR-08 / FND-03: Cross-validate key_fields and primary_key columns
+		colNames := make(map[string]bool)
+		pkColNames := make(map[string]bool)
+
+		for _, c := range v.Columns {
+			if c.Name == "" {
+				continue // already caught above
+			}
+			if colNames[c.Name] {
+				errs = append(errs, fmt.Sprintf("%s: duplicate column name %q", prefix, c.Name))
+			}
+			colNames[c.Name] = true
+			if c.PrimaryKey {
+				pkColNames[c.Name] = true
+			}
+		}
+
+		// Every key_field must reference a column that exists and has primary_key=true
+		for _, kf := range v.KeyFields {
+			if !pkColNames[kf] {
+				if colNames[kf] {
+					errs = append(errs, fmt.Sprintf("%s: key_field %q references column %q which does not have primary_key=true", prefix, kf, kf))
+				} else {
+					errs = append(errs, fmt.Sprintf("%s: key_field %q does not reference any declared column", prefix, kf))
+				}
+			}
+		}
+
+		// Every column with primary_key=true must be listed in key_fields
+		for pkName := range pkColNames {
+			found := false
+			for _, kf := range v.KeyFields {
+				if kf == pkName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				errs = append(errs, fmt.Sprintf("%s: column %q has primary_key=true but is not listed in key_fields", prefix, pkName))
+			}
+		}
 	}
 
 	if len(errs) == 0 {
