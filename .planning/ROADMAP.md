@@ -80,7 +80,12 @@ Plans:
   4. Consumer batch configuration is either renamed to `MaxAckPending` or actual batched fetching via `Fetch`/`FetchNoWait` is implemented
   5. HTTP server port is initialized from `cfg.HTTP.Port` in engine constructors instead of being hardcoded to 8080
   6. `Engine.Start` propagates startup errors synchronously: HTTP listen failures, materializer init failures, and NATS handler registration failures prevent the engine from reporting as started
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 09-01-PLAN.md — Remove worker pool, sequential ordered processing (MAT-01)
+- [ ] 09-02-PLAN.md — Error classification, consumer durability, BatchSize rename (MAT-02, MAT-03, MAT-04)
+- [ ] 09-03-PLAN.md — HTTP port from config, startup error propagation (LIFE-01, LIFE-02)
 
 ### Phase 10: Query Engine & Transport
 
@@ -125,6 +130,6 @@ Plans:
 | 6. Transport & Code Health | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 7. Integration Verification | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 8. Verification & Foundation | v1.2 | 0/4 | Not started | - |
-| 9. Materializer & Engine Lifecycle | v1.2 | 0/0 | Not started | - |
+| 9. Materializer & Engine Lifecycle | v1.2 | 0/3 | Planned | - |
 | 10. Query Engine & Transport | v1.2 | 0/0 | Not started | - |
 | 11. Cleanup & Documentation | v1.2 | 0/0 | Not started | - |
