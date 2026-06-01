@@ -32,7 +32,7 @@ func TestSetupConsumer_CreatesDurableConsumer(t *testing.T) {
 	createStream(t, ctx, js, streamName)
 
 	cfg := natsql.ConsumerConfig{
-		BatchSize:      10,
+		MaxAckPending:  10,
 		MaxDeliver:     5,
 		AckWaitSeconds: 10,
 	}
@@ -67,7 +67,7 @@ func TestSetupConsumer_ResumesExistingConsumer(t *testing.T) {
 	streamName := "TEST_STREAM_RESUME"
 	createStream(t, ctx, js, streamName)
 
-	cfg := natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10}
+	cfg := natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10}
 
 	// First call: creates consumer
 	cons1, err := SetupConsumer(ctx, js, streamName, "resume-view", "", cfg)
@@ -100,7 +100,7 @@ func TestSetupConsumer_ConfigFieldsApplied(t *testing.T) {
 	createStream(t, ctx, js, streamName)
 
 	cfg := natsql.ConsumerConfig{
-		BatchSize:      25,
+		MaxAckPending:  25,
 		MaxDeliver:     7,
 		AckWaitSeconds: 15,
 	}
@@ -118,8 +118,8 @@ func TestSetupConsumer_ConfigFieldsApplied(t *testing.T) {
 	if info.Config.AckWait != 15*time.Second {
 		t.Errorf("AckWait = %v, want 15s", info.Config.AckWait)
 	}
-	if info.Config.MaxAckPending != 50 {
-		t.Errorf("MaxAckPending = %d, want 50 (25*2)", info.Config.MaxAckPending)
+	if info.Config.MaxAckPending != 25 {
+		t.Errorf("MaxAckPending = %d, want 25", info.Config.MaxAckPending)
 	}
 }
 
@@ -134,7 +134,7 @@ func TestSetupConsumer_FilterSubjectApplied(t *testing.T) {
 	streamName := "TEST_FILTER_STREAM"
 	createStreamWithSubjects(t, ctx, js, streamName, []string{streamName + ".>"})
 
-	cfg := natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10}
+	cfg := natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10}
 	sourceSubject := streamName + ".events.>"
 
 	cons, err := SetupConsumer(ctx, js, streamName, "filter-view", sourceSubject, cfg)
@@ -160,7 +160,7 @@ func TestSetupConsumer_DeliverAllPolicy(t *testing.T) {
 	streamName := "TEST_DELIVER_ALL"
 	createStream(t, ctx, js, streamName)
 
-	cfg := natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10}
+	cfg := natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10}
 
 	cons, err := SetupConsumer(ctx, js, streamName, "deliver-view", "", cfg)
 	if err != nil {
@@ -181,7 +181,7 @@ func TestSetupConsumer_StreamNotFound_ReturnsError(t *testing.T) {
 	defer srv.Shutdown()
 	defer nc.Close()
 
-	cfg := natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10}
+	cfg := natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10}
 
 	_, err := SetupConsumer(ctx, js, "NONEXISTENT_STREAM", "test", "", cfg)
 	if err == nil {

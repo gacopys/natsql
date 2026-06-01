@@ -169,7 +169,7 @@ func TestBlackBox_Queries(t *testing.T) {
 					{Name: "city", From: "city", Type: natsql.ColumnTypeString},
 					{Name: "active", From: "active", Type: natsql.ColumnTypeBoolean},
 				},
-				Consumer: natsql.ConsumerConfig{BatchSize: 30, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsql.ConsumerConfig{MaxAckPending: 30, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}

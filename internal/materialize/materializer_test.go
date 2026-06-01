@@ -54,7 +54,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 			{Name: "name", From: "name", Type: natsql.ColumnTypeString},
 			{Name: "age", From: "age", Type: natsql.ColumnTypeNumber},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	// Start materializer in goroutine
@@ -154,7 +154,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -252,7 +252,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 			{Name: "name", From: "name", Type: natsql.ColumnTypeString},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -337,7 +337,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -392,7 +392,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 			{Name: "name", From: "name", Type: natsql.ColumnTypeString},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -489,7 +489,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 			{Name: "score", From: "stats.score", Type: natsql.ColumnTypeNumber},
 			{Name: "active", From: "flags.active", Type: natsql.ColumnTypeBoolean},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -575,7 +575,7 @@ func TestMaterializerDrain(t *testing.T) {
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -648,7 +648,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 			{Name: "counter", From: "counter", Type: natsql.ColumnTypeNumber},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	// Set up goroutine ID tracking via test hook
@@ -746,7 +746,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 			{Name: "pk", From: "pk", Type: natsql.ColumnTypeString, PrimaryKey: true},
 			{Name: "counter", From: "counter", Type: natsql.ColumnTypeNumber},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	matCtx, matCancel := context.WithCancel(context.Background())
@@ -832,7 +832,7 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-		Consumer: natsql.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
 	// Capture log output

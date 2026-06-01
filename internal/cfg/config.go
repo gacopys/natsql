@@ -66,6 +66,14 @@ func (cfg *Config) SetDefaults() {
 	if cfg.HTTP.Port == 0 {
 		cfg.HTTP.Port = 8080
 	}
+
+	// Migrate deprecated BatchSize to MaxAckPending
+	for i := range cfg.Views {
+		v := &cfg.Views[i]
+		if v.Consumer.BatchSize > 0 && v.Consumer.MaxAckPending == 0 {
+			v.Consumer.MaxAckPending = v.Consumer.BatchSize
+		}
+	}
 }
 
 // ViewConfig defines one materialized view.
@@ -96,9 +104,12 @@ type IndexConfig struct {
 
 // ConsumerConfig configures the JetStream consumer for a view.
 type ConsumerConfig struct {
-	BatchSize      int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
+	MaxAckPending  int `yaml:"max_ack_pending,omitempty" json:"max_ack_pending,omitempty"`
 	MaxDeliver     int `yaml:"max_deliver,omitempty" json:"max_deliver,omitempty"`
 	AckWaitSeconds int `yaml:"ack_wait_seconds,omitempty" json:"ack_wait_seconds,omitempty"`
+
+	// Deprecated: Use MaxAckPending instead. Kept for backward compat.
+	BatchSize int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
 }
 
 // LoadConfig reads a YAML or JSON config file and returns the parsed Config.

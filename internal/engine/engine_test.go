@@ -48,7 +48,7 @@ func TestEngineEndToEnd(t *testing.T) {
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 					{Name: "age", From: "age", Type: natsqlpkg.ColumnTypeNumber},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -159,7 +159,7 @@ func TestEngineMultipleViews(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "email", From: "email", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 			{
 				Name:         "mv_orders",
@@ -169,7 +169,7 @@ func TestEngineMultipleViews(t *testing.T) {
 					{Name: "order_id", From: "order_id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "amount", From: "amount", Type: natsqlpkg.ColumnTypeNumber},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -255,7 +255,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -370,7 +370,7 @@ func TestEngineRestart(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -455,7 +455,7 @@ func TestEngineDoubleStart(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -618,7 +618,7 @@ func TestEngineStats(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -699,7 +699,7 @@ func TestEngineGoroutineLeak(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -1058,7 +1058,7 @@ func TestEngineFullLifecycleViaFacade(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -1156,7 +1156,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "data", From: "data", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}

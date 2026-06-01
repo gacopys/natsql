@@ -38,19 +38,18 @@ func SetupConsumer(ctx context.Context, js jetstream.JetStream, streamName strin
 		ackWaitSeconds = 30
 	}
 
-	batchSize := cfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = 50
+	maxAckPending := cfg.MaxAckPending
+	if maxAckPending <= 0 {
+		maxAckPending = 50
 	}
 
 	consumerCfg := jetstream.ConsumerConfig{
-		Durable:           ConsumerName(viewName),
-		AckPolicy:         jetstream.AckExplicitPolicy,
-		DeliverPolicy:     jetstream.DeliverAllPolicy,
-		MaxDeliver:        maxDeliver,
-		AckWait:           time.Duration(ackWaitSeconds) * time.Second,
-		MaxAckPending:     batchSize * 2,
-		InactiveThreshold: 1 * time.Hour,
+		Durable:       ConsumerName(viewName),
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		MaxDeliver:    maxDeliver,
+		AckWait:       time.Duration(ackWaitSeconds) * time.Second,
+		MaxAckPending: maxAckPending,
 	}
 
 	if sourceSubject != "" {
