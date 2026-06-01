@@ -60,7 +60,13 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
   2. PK values are encoded by a single canonical function used by both write (materializer) and read (query planner/executor) paths, eliminating double-sanitization and lookup key mismatch
   3. Unsupported SQL constructs (ORDER BY, DISTINCT, GROUP BY, HAVING, aggregations, subqueries) produce explicit error messages at parse time instead of silent mishandling
   4. Config validation cross-references `key_fields` against declared `primary_key` columns, verifies uniqueness of view names and column names, and rejects invalid configurations at load time
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 08-01-PLAN.md — Verify all 25 code review findings against source
+- [ ] 08-02-PLAN.md — Reject unsupported SQL constructs (DISTINCT, ORDER BY, GROUP BY, HAVING, aggregations)
+- [ ] 08-03-PLAN.md — Add config cross-validation (key_fields vs primary_key)
+- [ ] 08-04-PLAN.md — Canonical PK encoder (BuildPkKey), remove dead code
 
 ### Phase 9: Materializer & Engine Lifecycle
 
@@ -118,7 +124,7 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 | 5. Materializer Hardening | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 6. Transport & Code Health | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 7. Integration Verification | v1.1 | 1/1 | Complete | 2026-05-29 |
-| 8. Verification & Foundation | v1.2 | 0/0 | Not started | - |
+| 8. Verification & Foundation | v1.2 | 0/4 | Not started | - |
 | 9. Materializer & Engine Lifecycle | v1.2 | 0/0 | Not started | - |
 | 10. Query Engine & Transport | v1.2 | 0/0 | Not started | - |
 | 11. Cleanup & Documentation | v1.2 | 0/0 | Not started | - |
