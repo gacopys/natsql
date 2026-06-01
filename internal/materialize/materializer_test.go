@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsql "github.com/gacopys/natsql/internal/cfg"
@@ -883,3 +884,166 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		t.Fatal("materializer did not shut down within 5 seconds")
 	}
 }
+
+// --- Error classification tests ---
+
+func TestClassifyWriteError_Transient(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"deadline exceeded", context.DeadlineExceeded},
+		{"context canceled", context.Canceled},
+		{"connection refused", fmt.Errorf("connection refused")},
+		{"no leader", fmt.Errorf("no leader for topic")},
+		{"timeout", fmt.Errorf("nats: timeout")},
+		{"connection closed", fmt.Errorf("connection closed unexpectedly")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyWriteError(tc.err); got != errorClassTransient {
+				t.Errorf("classifyWriteError(%v) = %v, want %v", tc.err, got, errorClassTransient)
+			}
+		})
+	}
+}
+
+func TestClassifyWriteError_Terminal(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"nil error", nil},
+		{"key too long", fmt.Errorf("key too long")},
+		{"value too large", fmt.Errorf("value exceeds max size")},
+		{"bad data", fmt.Errorf("invalid message data")},
+		{"generic error", fmt.Errorf("something went wrong")},
+		{"empty string", fmt.Errorf("")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyWriteError(tc.err); got != errorClassTerminal {
+				t.Errorf("classifyWriteError(%v) = %v, want %v", tc.err, got, errorClassTerminal)
+			}
+		})
+	}
+}
+
+func TestProcessEvent_TransientWriteError_NAKs(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	mapper, err := NewMapper(&natsql.ViewConfig{
+		Name:      "test",
+		KeyFields: []string{"id"},
+		Columns: []natsql.ColumnConfig{
+			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper failed: %v", err)
+	}
+
+	js := &fakeJS{}
+	kvMock := &fakeKV{putErr: fmt.Errorf("connection refused")}
+	writer := NewWriter(kvMock, "test_view", "|")
+	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
+	viewCfg := &natsql.ViewConfig{Name: "test_view"}
+
+	processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
+
+	if !msg.nakked {
+		t.Error("expected msg.Nak() to be called for transient write error")
+	}
+	if msg.acked {
+		t.Error("expected msg.Ack() NOT to be called for transient write error")
+	}
+	if js.publishCalled {
+		t.Error("expected no DLQ publish for transient write error")
+	}
+}
+
+func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	mapper, err := NewMapper(&natsql.ViewConfig{
+		Name:      "test",
+		KeyFields: []string{"id"},
+		Columns: []natsql.ColumnConfig{
+			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper failed: %v", err)
+	}
+
+	js := &fakeJS{}
+	kvMock := &fakeKV{putErr: fmt.Errorf("key too long")}
+	writer := NewWriter(kvMock, "test_view", "|")
+	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
+	viewCfg := &natsql.ViewConfig{Name: "test_view"}
+
+	processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
+
+	if !js.publishCalled {
+		t.Error("expected DLQ publish for terminal write error")
+	}
+	if !msg.acked {
+		t.Error("expected msg.Ack() to be called after DLQ publish for terminal error")
+	}
+	if msg.nakked {
+		t.Error("expected msg.Nak() NOT to be called for terminal write error (DLQ success)")
+	}
+}
+
+// --- Mocks for error classification tests ---
+
+// fakeJS mocks jetstream.JetStream for DLQ publish tracking.
+type fakeJS struct {
+	jetstream.JetStream
+	publishCalled bool
+	publishErr    error
+}
+
+func (f *fakeJS) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	f.publishCalled = true
+	return &jetstream.PubAck{}, f.publishErr
+}
+
+// fakeKV mocks jetstream.KeyValue for Writer error injection.
+type fakeKV struct {
+	jetstream.KeyValue
+	putErr    error
+	putCalled bool
+}
+
+func (f *fakeKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	f.putCalled = true
+	return 0, f.putErr
+}
+
+func (f *fakeKV) Bucket() string { return "test-bucket" }
+
+// fakeMsg mocks jetstream.Msg for Ack/Nak tracking.
+type fakeMsg struct {
+	data   []byte
+	seq    uint64
+	acked  bool
+	nakked bool
+}
+
+func (m *fakeMsg) Data() []byte { return m.data }
+func (m *fakeMsg) Ack() error   { m.acked = true; return nil }
+func (m *fakeMsg) Nak() error   { m.nakked = true; return nil }
+func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}}, nil
+}
+func (m *fakeMsg) Headers() nats.Header                 { return nil }
+func (m *fakeMsg) Subject() string                      { return "" }
+func (m *fakeMsg) Reply() string                        { return "" }
+func (m *fakeMsg) DoubleAck(ctx context.Context) error   { return nil }
+func (m *fakeMsg) NakWithDelay(delay time.Duration) error { return nil }
+func (m *fakeMsg) InProgress() error                    { return nil }
+func (m *fakeMsg) Term() error                          { return nil }
+func (m *fakeMsg) TermWithReason(reason string) error   { return nil }

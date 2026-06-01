@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -209,6 +210,41 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 	return ctx.Err()
 }
 
+// errorClass categorizes KV write errors for processEvent routing.
+type errorClass int
+
+const (
+	errorClassTransient errorClass = iota
+	errorClassTerminal
+)
+
+// classifyWriteError categorizes a Writer.Apply error as transient or terminal.
+// Transient errors: temporary infrastructure issues that may resolve on retry.
+// Terminal errors: bad data or configuration that will never succeed.
+func classifyWriteError(err error) errorClass {
+	if err == nil {
+		return errorClassTerminal // should not happen, be safe
+	}
+
+	// Context cancellation is always transient
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return errorClassTransient
+	}
+
+	errStr := err.Error()
+
+	// NATS connection/network errors — transient
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no leader") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection closed") {
+		return errorClassTransient
+	}
+
+	// Everything else is terminal — bad data, bad config, etc.
+	return errorClassTerminal
+}
+
 // processEvent handles one event: map → write/error → ack/Nak.
 func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, logger *slog.Logger) {
 	mut, mapErr := mapper.MapRow(msg)
@@ -240,22 +276,38 @@ func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, w
 
 	if mut != nil {
 		if writeErr := writer.Apply(ctx, mut); writeErr != nil {
+			// Context cancellation — NAK for redelivery
 			if ctx.Err() != nil {
-				msg.Nak()
+				if nakErr := msg.Nak(); nakErr != nil {
+					logger.Warn("failed to nak event after context cancellation", "seq", getMsgSeq(msg), "error", nakErr)
+				}
 				return
 			}
-			if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
-				logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+
+			switch classifyWriteError(writeErr) {
+			case errorClassTransient:
+				// Transient failure: NAK with backoff — JetStream handles retry timing
+				logger.Warn("transient write failure, nacking for redelivery", "seq", getMsgSeq(msg), "error", writeErr)
 				if nakErr := msg.Nak(); nakErr != nil {
-					logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+					logger.Warn("failed to nak transient event", "seq", getMsgSeq(msg), "error", nakErr)
 				}
-			} else {
-				if ackErr := msg.Ack(); ackErr != nil {
-					logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
+				return
+
+			case errorClassTerminal:
+				// Terminal failure: DLQ + Ack
+				logger.Error("terminal write failure, sending to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
+				if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
+					logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+					if nakErr := msg.Nak(); nakErr != nil {
+						logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
+					}
+				} else {
+					if ackErr := msg.Ack(); ackErr != nil {
+						logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
+					}
 				}
+				return
 			}
-			logger.Error("write failed, sent to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
-			return
 		}
 	}
 
