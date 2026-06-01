@@ -262,6 +262,44 @@ func TestPkKey_Sanitization(t *testing.T) {
 	}
 }
 
+func TestBuildPkKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		viewName  string
+		pkParts   []string
+		separator string
+		want      string
+	}{
+		{"single part", "users", []string{"abc"}, "|", "users/pk/abc"},
+		{"composite", "users", []string{"a", "b"}, "|", "users/pk/a|b"},
+		{"underscore", "users", []string{"a_b"}, "|", "users/pk/a__b"},
+		{"pipe", "users", []string{"a|b"}, "|", "users/pk/a_pb"},
+		{"slash", "users", []string{"a/b"}, "|", "users/pk/a_sb"},
+		{"star", "users", []string{"a*b"}, "|", "users/pk/a_ab"},
+		{"greater", "users", []string{"a>b"}, "|", "users/pk/a_gb"},
+		{"double underscore", "users", []string{"a__b"}, "|", "users/pk/a____b"},
+		{"custom sep slash", "users", []string{"hello", "world"}, "/", "users/pk/hello/world"},
+		{"custom sep colon", "users", []string{"a", "b"}, ":", "users/pk/a:b"},
+		{"empty parts", "users", []string{""}, "|", "users/pk/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildPkKey(tt.viewName, tt.pkParts, tt.separator)
+			if got != tt.want {
+				t.Errorf("BuildPkKey(%q, %v, %q) = %q, want %q", tt.viewName, tt.pkParts, tt.separator, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPkKey_BackwardCompat(t *testing.T) {
+	result := PkKey("users", "abc123")
+	expected := "users/pk/abc123"
+	if result != expected {
+		t.Errorf("PkKey backward compat: got %q, want %q", result, expected)
+	}
+}
+
 func TestEncodePKValue_Float32(t *testing.T) {
 	result := EncodePKValue(float32(3.14))
 	if result == "" {
