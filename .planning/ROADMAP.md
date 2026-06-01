@@ -63,10 +63,10 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 **Plans**: 4 plans
 
 Plans:
-- [ ] 08-01-PLAN.md — Verify all 25 code review findings against source
-- [ ] 08-02-PLAN.md — Reject unsupported SQL constructs (DISTINCT, ORDER BY, GROUP BY, HAVING, aggregations)
-- [ ] 08-03-PLAN.md — Add config cross-validation (key_fields vs primary_key)
-- [ ] 08-04-PLAN.md — Canonical PK encoder (BuildPkKey), remove dead code
+- [x] 08-01-PLAN.md — Verify all 25 code review findings against source
+- [x] 08-02-PLAN.md — Reject unsupported SQL constructs (DISTINCT, ORDER BY, GROUP BY, HAVING, aggregations)
+- [x] 08-03-PLAN.md — Add config cross-validation (key_fields vs primary_key)
+- [x] 08-04-PLAN.md — Canonical PK encoder (BuildPkKey), remove dead code
 
 ### Phase 9: Materializer & Engine Lifecycle
 
