@@ -40,10 +40,11 @@ type Plan interface {
 
 // PKLookupPlan is a direct primary key point lookup.
 type PKLookupPlan struct {
-	ViewName string
-	PkValue  string
-	Columns  []string    // nil = all
-	Where    []Condition // non-PK conditions to apply as post-filter
+	ViewName  string
+	PkParts   []string    // raw PK component values (not sanitized, not joined)
+	Separator string      // separator used to join PkParts
+	Columns   []string    // nil = all
+	Where     []Condition // non-PK conditions to apply as post-filter
 }
 
 // FullScanPlan iterates all keys for a view, applies filters client-side.

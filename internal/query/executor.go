@@ -19,7 +19,7 @@ const fullScanWorkers = 16
 // Returns a single row or empty slice if not found.
 // If the plan has non-PK WHERE conditions, they are applied as a post-filter.
 func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
-	key := kv.PkKey(p.ViewName, p.PkValue)
+	key := kv.BuildPkKey(p.ViewName, p.PkParts, p.Separator)
 	entry, err := kvb.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {

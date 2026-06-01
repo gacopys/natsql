@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/gacopys/natsql/internal/kv"
 )
@@ -35,7 +34,6 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 		if separator == "" {
 			separator = "|"
 		}
-		pkValue := strings.Join(pkValues, separator)
 
 		// Collect non-PK conditions for post-filter
 		var nonPKConditions []Condition
@@ -45,11 +43,13 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 			}
 		}
 
+		// Note: pkValues are raw (not sanitized) — BuildPkKey sanitizes once at KV boundary
 		return &PKLookupPlan{
-			ViewName: q.From,
-			PkValue:  pkValue,
-			Columns:  q.Select,
-			Where:    nonPKConditions,
+			ViewName:  q.From,
+			PkParts:   pkValues,
+			Separator: separator,
+			Columns:   q.Select,
+			Where:     nonPKConditions,
 		}, nil
 	}
 
