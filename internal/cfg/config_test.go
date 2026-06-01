@@ -327,3 +327,100 @@ func TestValidate_ValidMinimal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestValidate_DuplicateColumnNames(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "k", From: "other", Type: ColumnTypeNumber},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate column name")
+	}
+}
+
+func TestValidate_KeyFieldNonexistentColumn(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"nonexistent"},
+				Columns:      []ColumnConfig{{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true}},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for key_field referencing non-existent column")
+	}
+}
+
+func TestValidate_KeyFieldNotPrimaryKey(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: false},
+					{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for key_field referencing non-primary-key column")
+	}
+}
+
+func TestValidate_PrimaryKeyNotInKeyFields(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for primary_key column not in key_fields")
+	}
+}
+
+func TestValidate_ConsistentKeyFieldsAndPrimaryKey(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"a", "b"},
+				Columns: []ColumnConfig{
+					{Name: "a", From: "a", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "b", From: "b", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "val", From: "val", Type: ColumnTypeNumber},
+				},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
