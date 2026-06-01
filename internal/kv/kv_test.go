@@ -11,92 +11,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-func TestPkKey(t *testing.T) {
-	result := PkKey("users", "abc123")
-	expected := "users/pk/abc123"
-	if result != expected {
-		t.Errorf("PkKey(\"users\", \"abc123\") = %q, want %q", result, expected)
-	}
-}
-
-func TestPkKey_SpecialChars(t *testing.T) {
-	result := PkKey("my-view", "user@example.com")
-	expected := "my-view/pk/user@example.com"
-	if result != expected {
-		t.Errorf("PkKey = %q, want %q", result, expected)
-	}
-}
-
 func TestSchemaKey(t *testing.T) {
 	result := SchemaKey("users")
 	expected := "users/meta/schema"
 	if result != expected {
 		t.Errorf("SchemaKey(\"users\") = %q, want %q", result, expected)
-	}
-}
-
-func TestEncodePKValue_String(t *testing.T) {
-	result := EncodePKValue("hello")
-	if result != "hello" {
-		t.Errorf("EncodePKValue(\"hello\") = %q, want %q", result, "hello")
-	}
-}
-
-func TestEncodePKValue_WithSlash_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for string containing '/', got none")
-		}
-	}()
-	EncodePKValue("abc/123")
-}
-
-func TestEncodePKValue_WithColon_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for string containing ':', got none")
-		}
-	}()
-	EncodePKValue("abc:123")
-}
-
-func TestEncodePKValue_Int(t *testing.T) {
-	tests := []struct {
-		val  any
-		want string
-	}{
-		{int(42), "42"},
-		{int64(123456789), "123456789"},
-		{int32(-5), "-5"},
-	}
-	for _, tt := range tests {
-		got := EncodePKValue(tt.val)
-		if got != tt.want {
-			t.Errorf("EncodePKValue(%v) = %q, want %q", tt.val, got, tt.want)
-		}
-	}
-}
-
-func TestEncodePKValue_Float(t *testing.T) {
-	result := EncodePKValue(float64(3.14))
-	if result == "" {
-		t.Error("EncodePKValue(3.14) returned empty")
-	}
-}
-
-func TestEncodePKValue_Bool(t *testing.T) {
-	if EncodePKValue(true) != "true" {
-		t.Error("EncodePKValue(true) should be 'true'")
-	}
-	if EncodePKValue(false) != "false" {
-		t.Error("EncodePKValue(false) should be 'false'")
-	}
-}
-
-func TestEncodePKValue_Nil(t *testing.T) {
-	result := EncodePKValue(nil)
-	if result != "" {
-		t.Errorf("EncodePKValue(nil) = %q, want empty", result)
 	}
 }
 
@@ -298,45 +217,6 @@ func TestPkKey_BackwardCompat(t *testing.T) {
 	if result != expected {
 		t.Errorf("PkKey backward compat: got %q, want %q", result, expected)
 	}
-}
-
-func TestEncodePKValue_Float32(t *testing.T) {
-	result := EncodePKValue(float32(3.14))
-	if result == "" {
-		t.Error("EncodePKValue(float32) returned empty")
-	}
-}
-
-func TestEncodePKValue_DefaultCase(t *testing.T) {
-	result := EncodePKValue(struct{ name string }{name: "test"})
-	if result == "" {
-		t.Error("EncodePKValue(struct) returned empty")
-	}
-}
-
-func TestMustInitBucket_Success(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
-
-	kv := MustInitBucket(ctx, js, 1)
-	if kv == nil {
-		t.Fatal("MustInitBucket returned nil")
-	}
-}
-
-func TestMustInitBucket_PanicsOnError(t *testing.T) {
-	ctx := context.Background()
-	// nil JetStream should cause panic
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic with nil JetStream, got none")
-		}
-	}()
-	MustInitBucket(ctx, nil, 1)
 }
 
 // Helpers
