@@ -275,9 +275,9 @@ func TestHTTPBodyTrailingWhitespaceOK(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	// Body with trailing whitespace — should be accepted
+	// Body with trailing whitespace/newline — should be accepted
 	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json",
-		strings.NewReader(`{"sql":"SELECT 1"}  \n  `))
+		strings.NewReader("{\"sql\":\"SELECT 1\"}  \n  "))
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}

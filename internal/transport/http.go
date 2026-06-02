@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,20 +27,30 @@ func RegisterHTTPHandler(router chi.Router, handler QueryHandler) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 		var req QueryRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			if err.Error() == "http: request body too large" {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
 				w.WriteHeader(http.StatusRequestEntityTooLarge)
 				w.Write([]byte(fmt.Sprintf(`{"results":[],"error":"request body too large (max %d bytes)"}`, maxRequestBodySize)))
 				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`{"results":[],"error":"invalid JSON body"}`))
 			return
 		}
-		// Drain and close body
-		io.Copy(io.Discard, r.Body)
-		r.Body.Close()
+		// Check for trailing data after JSON body (D-17/D-18)
+		// Use json.Decoder's double-decode pattern since the decoder's
+		// internal bufio buffer may have consumed the underlying reader.
+		var trailing json.RawMessage
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"results":[],"error":"unexpected data after JSON body"}`))
+			return
+		}
 		result := handler.Query(r.Context(), req.SQL)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
