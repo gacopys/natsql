@@ -55,11 +55,12 @@ CLI flags override config file values (D-52).`,
 
 // CLI flags.
 var (
-	cfgPath  string
-	embedded bool
-	natsURL  string
-	storeDir string
-	httpPort int
+	cfgPath       string
+	embedded      bool
+	natsURL       string
+	storeDir      string
+	httpPort      int
+	createStreams bool
 )
 
 func init() {
@@ -68,6 +69,7 @@ func init() {
 	serverCmd.Flags().StringVarP(&natsURL, "nats-url", "u", "", "NATS server URL (overrides config)")
 	serverCmd.Flags().StringVar(&storeDir, "store-dir", "", "JetStream store directory (embedded mode)")
 	serverCmd.Flags().IntVarP(&httpPort, "port", "p", 0, "HTTP query API port (overrides config)")
+	serverCmd.Flags().BoolVar(&createStreams, "create-streams", false, "Create source streams in external mode (embedded: always created)")
 	rootCmd.AddCommand(serverCmd)
 }
 
@@ -120,26 +122,46 @@ func runServer(cmd *cobra.Command) error {
 		return fmt.Errorf("creating engine: %w", err)
 	}
 
-	// 5. Create source streams before starting engine
+	// 5. Source stream setup (TRN-01)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	js, jserr := jetstream.New(eng.NC())
-	if jserr == nil {
-		seen := map[string]bool{}
-		for _, v := range cfg.Views {
-			if seen[v.SourceStream] {
-				continue
-			}
-			seen[v.SourceStream] = true
-			_, serr := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-				Name:     v.SourceStream,
-				Subjects: []string{v.SourceStream + ".>"},
-			})
-			if serr != nil {
-				logger.Warn("failed to create source stream", "stream", v.SourceStream, "error", serr)
-			} else {
-				logger.Info("created source stream", "stream", v.SourceStream)
+	if !cfg.NATS.Embedded && !createStreams {
+		// External mode without --create-streams: warn but don't create streams (D-13)
+		logger.Warn("external mode: not creating source streams (use --create-streams to opt in)")
+	} else {
+		js, jserr := jetstream.New(eng.NC())
+		if jserr == nil {
+			seen := map[string]bool{}
+			for _, v := range cfg.Views {
+				if seen[v.SourceStream] {
+					continue
+				}
+				seen[v.SourceStream] = true
+
+				// Build subjects list respecting source_subject (D-14)
+				subjects := []string{v.SourceSubject}
+				if v.SourceSubject == "" {
+					subjects = []string{v.SourceStream + ".>"}
+				}
+
+				if !cfg.NATS.Embedded {
+					// External mode with --create-streams: skip existing streams (D-15)
+					if _, err := js.Stream(ctx, v.SourceStream); err == nil {
+						logger.Info("source stream already exists, skipping", "stream", v.SourceStream)
+						continue
+					}
+				}
+
+				_, serr := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+					Name:     v.SourceStream,
+					Subjects: subjects,
+				})
+				if serr != nil {
+					logger.Warn("failed to create source stream", "stream", v.SourceStream, "error", serr)
+				} else {
+					logger.Info("created source stream", "stream", v.SourceStream, "subjects", subjects)
+				}
 			}
 		}
 	}
