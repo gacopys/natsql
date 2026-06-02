@@ -236,6 +236,58 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 	}
 }
 
+// TestHTTPBodyTrailingData verifies that trailing non-whitespace data
+// after the JSON body is rejected with 400.
+func TestHTTPBodyTrailingData(t *testing.T) {
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, handler)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Body with trailing non-whitespace data
+	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json",
+		strings.NewReader(`{"sql":"SELECT 1"}extra`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (400 Bad Request)", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestHTTPBodyTrailingWhitespaceOK verifies that trailing whitespace
+// after the JSON body is accepted (200 OK).
+func TestHTTPBodyTrailingWhitespaceOK(t *testing.T) {
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, handler)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Body with trailing whitespace — should be accepted
+	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json",
+		strings.NewReader(`{"sql":"SELECT 1"}  \n  `))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d (200 OK)", resp.StatusCode, http.StatusOK)
+	}
+}
+
 func TestHTTPContentType(t *testing.T) {
 	handler := &mockHandler{
 		result: &query.QueryResult{},
