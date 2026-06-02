@@ -93,15 +93,19 @@ Plans:
 **Depends on**: Phase 8 (requires canonical PK encoder from Foundation)
 **Requirements**: QENG-01, QENG-02, QENG-03, QENG-04, TRN-01, TRN-02, TRN-03, TRN-04
 **Success Criteria** (what must be TRUE):
-  1. All WHERE conditions are retained as post-filters (including conditions on PK columns), preventing contradictory or duplicate PK predicates from producing wrong results
-  2. `SELECT *` returns only schema-declared columns, excluding internal `_meta` fields from query results
-  3. Query executor uses `json.Decoder.UseNumber()` for consistent numeric comparison, matching the materializer's precision handling for large integers above 2^53
-  4. Full-scan queries for a single view do not pay the cost of scanning all other views' KV keys; at minimum the cross-view cost is documented
-  5. CLI stream creation respects configured `source_subject` and does not mutate existing external streams without explicit opt-in
-  6. HTTP JSON handler uses `errors.As` for `MaxBytesError` body-size detection and rejects trailing non-whitespace data
-  7. NATS transport checks and surfaces `nc.Flush()` and `msg.Respond()` errors instead of ignoring them
-  8. Error message in executor.go is corrected from "marshaling row" to "unmarshaling row"
-**Plans**: TBD
+   1. All WHERE conditions are retained as post-filters (including conditions on PK columns), preventing contradictory or duplicate PK predicates from producing wrong results
+   2. `SELECT *` returns only schema-declared columns, excluding internal `_meta` fields from query results
+   3. Query executor uses `json.Decoder.UseNumber()` for consistent numeric comparison, matching the materializer's precision handling for large integers above 2^53
+   4. Full-scan queries for a single view do not pay the cost of scanning all other views' KV keys; at minimum the cross-view cost is documented
+   5. CLI stream creation respects configured `source_subject` and does not mutate existing external streams without explicit opt-in
+   6. HTTP JSON handler uses `errors.As` for `MaxBytesError` body-size detection and rejects trailing non-whitespace data
+   7. NATS transport checks and surfaces `nc.Flush()` and `msg.Respond()` errors instead of ignoring them
+   8. Error message in executor.go is corrected from "marshaling row" to "unmarshaling row"
+**Plans**: 2 plans
+
+Plans:
+- [ ] 10-01-PLAN.md — Query engine core fixes (post-filter all WHERE, short-circuit, UseNumber, _meta strip, Watch prefix)
+- [ ] 10-02-PLAN.md — Transport robustness (HTTP errors.As, trailing data, NATS Flush/Respond, CLI --create-streams)
 
 ### Phase 11: Cleanup & Documentation
 
@@ -129,7 +133,7 @@ Plans:
 | 5. Materializer Hardening | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 6. Transport & Code Health | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 7. Integration Verification | v1.1 | 1/1 | Complete | 2026-05-29 |
-| 8. Verification & Foundation | v1.2 | 0/4 | Not started | - |
-| 9. Materializer & Engine Lifecycle | v1.2 | 0/3 | Planned | - |
-| 10. Query Engine & Transport | v1.2 | 0/0 | Not started | - |
+| 8. Verification & Foundation | v1.2 | 4/4 | Complete | 2026-06-01 |
+| 9. Materializer & Engine Lifecycle | v1.2 | 3/3 | Complete | 2026-06-01 |
+| 10. Query Engine & Transport | v1.2 | 0/2 | Planned | - |
 | 11. Cleanup & Documentation | v1.2 | 0/0 | Not started | - |
