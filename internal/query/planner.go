@@ -35,11 +35,22 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 			separator = "|"
 		}
 
-		// Collect non-PK conditions for post-filter
-		var nonPKConditions []Condition
-		for _, c := range q.Where {
-			if _, isPK := pkConditions[c.Column]; !isPK {
-				nonPKConditions = append(nonPKConditions, c)
+		// Check for contradictory PK predicates (D-02)
+		// Same PK column with multiple different OpEq values → empty result
+		pkSeen := make(map[string]any)
+		for _, cond := range q.Where {
+			if cond.Op != OpEq {
+				continue
+			}
+			if _, isPK := pkConditions[cond.Column]; isPK {
+				if existing, ok := pkSeen[cond.Column]; ok {
+					if !valuesEqual(existing, cond.Value) {
+						// Contradictory PK conditions → empty result (D-02)
+						return &EmptyPlan{Columns: q.Select}, nil
+					}
+				} else {
+					pkSeen[cond.Column] = cond.Value
+				}
 			}
 		}
 
@@ -49,7 +60,7 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 			PkParts:   pkValues,
 			Separator: separator,
 			Columns:   q.Select,
-			Where:     nonPKConditions,
+			Where:     q.Where, // ALL conditions (PK + non-PK) as post-filters (D-01/D-03)
 		}, nil
 	}
 
