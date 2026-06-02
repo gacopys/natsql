@@ -69,6 +69,28 @@ func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetS
 // Transport tests
 // ---------------------------------------------------------------------------
 
+// TestRegisterNATSHandler_FlushError verifies that RegisterNATSHandler
+// returns any Flush error to the caller.
+func TestRegisterNATSHandler_FlushError(t *testing.T) {
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+	_ = js
+
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	// Close NATS connection before registering — Flush will fail
+	nc.Close()
+
+	_, err := transport.RegisterNATSHandler(nc, handler)
+	if err == nil {
+		t.Fatal("expected error from RegisterNATSHandler with closed connection, got nil")
+	}
+	t.Logf("Got expected error: %v", err)
+}
+
 // TestNATSRequestReply verifies that a NATS request on "natsql.query"
 // returns the expected JSON response from the handler.
 func TestNATSRequestReply(t *testing.T) {
