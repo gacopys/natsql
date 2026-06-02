@@ -77,9 +77,9 @@ This project was born from a conversation about why full PostgreSQL protocol on 
 
 natsql generalizes the pattern of "stream → KV" materialization into a configurable engine, inspired by reference implementations in the NATS ecosystem.
 
-## Current State (v1.1)
+## Current State (v1.2 — In Progress)
 
-Shipped **2026-05-29** with ~9,400 LOC across 40+ Go source files.
+Shipped **v1.1** on 2026-05-29 with ~9,400 LOC. **v1.2** code review remediation in progress — Phase 10 complete.
 
 **Architecture:** 3-component model — Materializer (stream→KV), Query Engine (SQL→KV reads), Transport (NATS/HTTP/Embed).
 
@@ -87,7 +87,7 @@ Shipped **2026-05-29** with ~9,400 LOC across 40+ Go source files.
 
 **Deployment modes:** Go library (import natsql), standalone binary with embedded NATS, standalone binary connecting to external NATS cluster.
 
-**v1.1 improvements:** All known bugs and hardening gaps from v1.0 code reviews eliminated — PK post-filter, data race fix, type-safe WHERE comparison, boolean literal support, PK sanitization, DLQ error propagation, HTTP timeouts/body limits, NATS bounded context, 750-line black-box test suite, GitHub Actions CI pipeline.
+**v1.2 Phase 10 completed:** Query engine fixes — post-filter all WHERE conditions, short-circuit contradictory PK predicates, UseNumber for large integer precision, SELECT * excludes `_meta` fields, prefix-scoped full scans (WatchAll + HasPrefix). Transport fixes — CLI `--create-streams` flag respecting `source_subject`, HTTP errors.As for MaxBytesError + trailing data rejection, NATS Flush/Respond error surfacing.
 
 ## Constraints
 
@@ -130,4 +130,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-05-31 — after v1.2 milestone started*
+*Last updated: 2026-06-02 — after Phase 10 completed*
