@@ -512,7 +512,8 @@ func TestProjectionSelectCols(t *testing.T) {
 	if results[0]["name"] != "Alice" {
 		t.Errorf("name = %v, want %q", results[0]["name"], "Alice")
 	}
-	if results[0]["age"] != float64(30) {
+	// UseNumber: stored float64(30) decoded as json.Number("30")
+	if !valuesEqual(results[0]["age"], float64(30)) {
 		t.Errorf("age = %v, want %v", results[0]["age"], float64(30))
 	}
 }
@@ -548,6 +549,155 @@ func TestProjectionMissingCol(t *testing.T) {
 	}
 	if val != nil {
 		t.Errorf("column 'nonexistent' should be nil, got %v", val)
+	}
+}
+
+func TestProjectionSelectStarExcludesMeta(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Store schema
+	if err := kv.StoreSchema(ctx, kvb, testSchema.Name, testSchema); err != nil {
+		t.Fatalf("StoreSchema failed: %v", err)
+	}
+
+	// Insert a row WITH _meta data (simulates what materializer stores)
+	rowWithMeta := map[string]any{
+		"id":     "meta_test",
+		"name":   "MetaUser",
+		"age":    float64(25),
+		"active": true,
+		"_meta":  map[string]any{"stream_seq": uint64(42)},
+	}
+	data, err := json.Marshal(rowWithMeta)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	key := kv.BuildPkKey(testSchema.Name, []string{"meta_test"}, testSchema.KeySeparator)
+	if _, err := kvb.Put(ctx, key, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// SELECT * (Columns=nil) — should exclude _meta
+	plan := &PKLookupPlan{
+		ViewName:  testSchema.Name,
+		PkParts:   []string{"meta_test"},
+		Separator: testSchema.KeySeparator,
+		Columns:   nil, // SELECT *
+	}
+
+	results, err := plan.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// _meta must NOT be in SELECT * results (D-04)
+	if _, hasMeta := results[0]["_meta"]; hasMeta {
+		t.Error("SELECT * should not include _meta field")
+	}
+
+	// Schema-declared columns should still be present
+	if results[0]["id"] != "meta_test" {
+		t.Errorf("id = %v, want %q", results[0]["id"], "meta_test")
+	}
+	if results[0]["name"] != "MetaUser" {
+		t.Errorf("name = %v, want %q", results[0]["name"], "MetaUser")
+	}
+
+	// Explicit column selection should still work unchanged (D-06)
+	plan2 := &PKLookupPlan{
+		ViewName:  testSchema.Name,
+		PkParts:   []string{"meta_test"},
+		Separator: testSchema.KeySeparator,
+		Columns:   []string{"name", "_meta"}, // explicit _meta selection
+	}
+	results2, err := plan2.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results2) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results2))
+	}
+	// When explicitly selected, _meta should be present because
+	// explicit column selection doesn't filter _-prefixed keys (D-06)
+	if _, hasMeta := results2[0]["_meta"]; !hasMeta {
+		t.Error("explicit _meta column select should include _meta")
+	}
+}
+
+func TestLargeIntegerPrecision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Store schema
+	schema := &kv.ViewSchema{
+		Name:         "bigint_test",
+		Columns:      []kv.ColumnSchema{{Name: "id", Type: "string", PrimaryKey: true}, {Name: "val", Type: "number"}},
+		KeyFields:    []string{"id"},
+		KeySeparator: "|",
+	}
+	if err := kv.StoreSchema(ctx, kvb, schema.Name, schema); err != nil {
+		t.Fatalf("StoreSchema failed: %v", err)
+	}
+
+	// 9007199254740993 is 2^53 + 1 — cannot be exactly represented as float64
+	// json.Marshal of this value as a raw number preserves it
+	bigVal := "9007199254740993"
+	rawJSON := `{"id":"big1","val":` + bigVal + `}`
+	data := []byte(rawJSON)
+	key := kv.BuildPkKey(schema.Name, []string{"big1"}, schema.KeySeparator)
+	if _, err := kvb.Put(ctx, key, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// Read back via PK lookup — value should be json.Number, not truncated float64
+	plan := &PKLookupPlan{
+		ViewName:  schema.Name,
+		PkParts:   []string{"big1"},
+		Separator: schema.KeySeparator,
+		Columns:   nil,
+	}
+	results, err := plan.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	val := results[0]["val"]
+	num, ok := val.(json.Number)
+	if !ok {
+		t.Fatalf("expected json.Number, got %T with value %v", val, val)
+	}
+	if num.String() != bigVal {
+		t.Errorf("val = %s, want %s (precision lost)", num.String(), bigVal)
+	}
+
+	// Also test valuesEqual with json.Number vs int64
+	if !valuesEqual(val, int64(9007199254740993)) {
+		t.Error("valuesEqual(json.Number('9007199254740993'), int64(9007199254740993)) should be true")
 	}
 }
 
