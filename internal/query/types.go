@@ -55,6 +55,17 @@ type FullScanPlan struct {
 	Limit    int
 }
 
+// EmptyPlan is returned when WHERE predicates are contradictory
+// (e.g., WHERE id = 'a' AND id = 'b'). Execution returns an empty
+// result set immediately with no KV I/O.
+type EmptyPlan struct {
+	Columns []string
+}
+
+func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+	return []map[string]any{}, nil
+}
+
 // QueryResult is the JSON response envelope per D-29.
 type QueryResult struct {
 	Results []map[string]any `json:"results"`

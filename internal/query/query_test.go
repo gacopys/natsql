@@ -140,6 +140,85 @@ func TestBuildPlanFullScanNonEqPK(t *testing.T) {
 	}
 }
 
+func TestBuildPlan_ContradictoryPK_ReturnsEmptyPlan(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "a"},
+			{Column: "id", Op: OpEq, Value: "b"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	if _, ok := plan.(*EmptyPlan); !ok {
+		t.Fatalf("expected EmptyPlan for contradictory PK, got %T", plan)
+	}
+}
+
+func TestBuildPlan_DuplicatePK_NotContradictory(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "a"},
+			{Column: "id", Op: OpEq, Value: "a"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	if _, ok := plan.(*PKLookupPlan); !ok {
+		t.Fatalf("expected PKLookupPlan for duplicate same-value PK, got %T", plan)
+	}
+	pkPlan := plan.(*PKLookupPlan)
+	// All conditions should be in Where (including the PK condition)
+	if len(pkPlan.Where) != 2 {
+		t.Errorf("expected 2 Where conditions (all preserved), got %d", len(pkPlan.Where))
+	}
+}
+
+func TestBuildPlan_AllConditionsKeptAsPostFilters(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "u1"},
+			{Column: "name", Op: OpEq, Value: "Alice"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
+		t.Fatalf("expected PKLookupPlan, got %T", plan)
+	}
+	// All conditions should be in Where (both PK and non-PK)
+	if len(pkPlan.Where) != 2 {
+		t.Errorf("expected 2 Where conditions (all preserved), got %d", len(pkPlan.Where))
+	}
+}
+
+func TestEmptyPlan_Execute(t *testing.T) {
+	// EmptyPlan returns empty results regardless of context or KV
+	plan := &EmptyPlan{}
+	results, err := plan.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("EmptyPlan.Execute failed: %v", err)
+	}
+	if results == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
 func TestBuildPlanPKLookupWithLimit(t *testing.T) {
 	q := &ValidatedQuery{
 		Select: nil,
