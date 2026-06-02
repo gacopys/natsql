@@ -1,10 +1,12 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -29,8 +31,10 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	}
 
 	var row map[string]any
-	if err := json.Unmarshal(entry.Value(), &row); err != nil {
-		return nil, fmt.Errorf("marshaling row: %w", err)
+	decoder := json.NewDecoder(bytes.NewReader(entry.Value()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&row); err != nil {
+		return nil, fmt.Errorf("unmarshaling row: %w", err)
 	}
 
 	// Apply non-PK WHERE conditions as post-filter (FIX-ENG-01)
@@ -48,6 +52,9 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
 	prefix := p.ViewName + "/pk/"
 
+	// Note: WatchAll is used because KV Watch pattern matching uses NATS subject
+	// semantics (tokenizing on '.'), but our keys use '/' separators. WatchAll +
+	// client-side HasPrefix filter is the correct approach (D-11 fallback per A1).
 	watcher, err := kvb.WatchAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("watching keys: %w", err)
@@ -94,7 +101,9 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 			}
 
 			var fullRow map[string]any
-			if uerr := json.Unmarshal(data, &fullRow); uerr != nil {
+			fDecoder := json.NewDecoder(bytes.NewReader(data))
+			fDecoder.UseNumber()
+			if uerr := fDecoder.Decode(&fullRow); uerr != nil {
 				select {
 				case errCh <- fmt.Errorf("unmarshaling row: %w", uerr):
 				default:
@@ -143,8 +152,14 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 // If columns is nil (SELECT *), the row is returned as-is.
 // Missing columns in the projection are set to nil per D-31.
 func projectRow(row map[string]any, columns []string) map[string]any {
-	if columns == nil {
-		return row // SELECT *
+	if columns == nil { // SELECT * — exclude internal fields starting with _
+		projected := make(map[string]any, len(row))
+		for k, v := range row {
+			if !strings.HasPrefix(k, "_") {
+				projected[k] = v
+			}
+		}
+		return projected
 	}
 
 	projected := make(map[string]any, len(columns))
@@ -196,12 +211,43 @@ func filterRow(row map[string]any, conditions []Condition) bool {
 	return true
 }
 
+// convertJSONNumber converts a json.Number to int64 or float64
+// for comparison with WHERE clause literal values.
+// json.Number with no decimal point → int64; with decimal → float64.
+func convertJSONNumber(n json.Number) any {
+	s := n.String()
+	if !strings.Contains(s, ".") {
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return i
+		}
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+	return s // fallback
+}
+
 // valuesEqual compares two values with type awareness.
-// Handles float64, int64, bool, string, and nil types.
+// Handles float64, int64, bool, string, json.Number, and nil types.
 // Falls back to fmt.Sprint for unhandled types.
 func valuesEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return a == b
+	}
+
+	// Normalize json.Number for comparison (D-09)
+	an, aIsNum := a.(json.Number)
+	bn, bIsNum := b.(json.Number)
+	if aIsNum || bIsNum {
+		aVal := a
+		bVal := b
+		if aIsNum {
+			aVal = convertJSONNumber(an)
+		}
+		if bIsNum {
+			bVal = convertJSONNumber(bn)
+		}
+		return valuesEqual(aVal, bVal)
 	}
 
 	// Normalize int64 → float64 for comparison (JSON numbers decode as float64)
