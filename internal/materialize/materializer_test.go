@@ -40,8 +40,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	}
 
 	// Create DLQ stream
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -65,7 +64,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -143,8 +142,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	}
 
 	// Create DLQ stream
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -164,7 +162,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -240,8 +238,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -262,7 +259,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -326,8 +323,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -346,7 +342,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow setup
@@ -380,8 +376,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -402,7 +397,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow setup to store schema
@@ -475,8 +470,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -499,7 +493,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond)
@@ -564,8 +558,7 @@ func TestMaterializerDrain(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -587,7 +580,7 @@ func TestMaterializerDrain(t *testing.T) {
 	defer matCancel()
 
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, drainCh)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, drainCh)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -636,8 +629,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -671,7 +663,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -734,8 +726,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -756,7 +747,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -821,8 +812,7 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	dlqStream, err := EnsureDLQStream(ctx, js)
-	if err != nil {
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
 		t.Fatalf("EnsureDLQStream failed: %v", err)
 	}
 
@@ -845,7 +835,7 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, dlqStream, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup

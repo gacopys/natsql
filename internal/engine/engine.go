@@ -235,8 +235,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	// 2. Create DLQ stream
-	dlqStream, err := materialize.EnsureDLQStream(ctx, e.js)
-	if err != nil {
+	if _, err := materialize.EnsureDLQStream(ctx, e.js); err != nil {
 		return fmt.Errorf("creating DLQ stream: %w", err)
 	}
 
@@ -266,7 +265,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.wg.Add(1)
 		go func(viewCfg natsqlpkg.ViewConfig, dc chan struct{}) {
 			defer e.wg.Done()
-			if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, dlqStream, e.logger, dc); runErr != nil {
+			if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, e.logger, dc); runErr != nil {
 				if !errors.Is(runErr, context.Canceled) {
 					e.logger.Error("materializer exited with error", "view", viewCfg.Name, "error", runErr)
 					startupCh <- matResult{name: viewCfg.Name, err: runErr}
@@ -475,11 +474,10 @@ func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 
 // Stats holds operational metrics for the Engine (D-60).
 type Stats struct {
-	Started     bool   `json:"started"`
-	Goroutines  int    `json:"goroutines"`
-	Views       int    `json:"views"`
-	HTTPServing bool   `json:"http_serving"`
-	LastError   string `json:"last_error,omitempty"`
+	Started     bool `json:"started"`
+	Goroutines  int  `json:"goroutines"`
+	Views       int  `json:"views"`
+	HTTPServing bool `json:"http_serving"`
 }
 
 // NC returns the NATS connection used by the engine.

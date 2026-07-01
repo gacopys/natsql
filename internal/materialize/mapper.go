@@ -113,6 +113,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 // Supports paths like "user.id" → data["user"]["id"].
 // Limits nesting depth to 8 levels per T-02-02.
 func extractNestedField(data map[string]any, path string) (any, error) {
+	path = strings.TrimPrefix(path, "$.")
 	parts := strings.Split(path, ".")
 	if len(parts) > maxNestingDepth {
 		return nil, fmt.Errorf("path %q exceeds maximum nesting depth of %d", path, maxNestingDepth)

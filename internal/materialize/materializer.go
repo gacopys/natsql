@@ -100,7 +100,7 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 //   - KV write failures: original published to DLQ, acked, continue
 //   - Context cancelled: return immediately
 //   - Consumer errors: logged, continue
-func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, dlqStream jetstream.Stream, logger *slog.Logger, drainCh <-chan struct{}) error {
+func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, logger *slog.Logger, drainCh <-chan struct{}) error {
 	// 1. Create durable consumer
 	cons, err := SetupConsumer(ctx, js, viewCfg.SourceStream, viewCfg.Name, viewCfg.SourceSubject, viewCfg.Consumer)
 	if err != nil {

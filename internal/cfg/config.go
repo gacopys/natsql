@@ -240,6 +240,13 @@ func (cfg *Config) Validate() error {
 		}
 	}
 
+	// CR-16 / CLN-02: Reject index configurations (not yet supported)
+	for i, v := range cfg.Views {
+		if len(v.Indexes) > 0 {
+			errs = append(errs, fmt.Sprintf("views[%d]: secondary indexes are not yet supported — remove indexes block from config", i))
+		}
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}
