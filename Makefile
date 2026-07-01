@@ -11,7 +11,7 @@ lint: generate
 lint-fix: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run --fix ./...
 
-vuln:
+vuln: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" govulncheck ./...
 
 test: generate
