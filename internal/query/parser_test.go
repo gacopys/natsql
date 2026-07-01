@@ -2,6 +2,7 @@ package query
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"vitess.io/vitess/go/vt/sqlparser"
@@ -222,7 +223,10 @@ func TestExtractConditions_AND_TwoConditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	conds, err := extractConditions(sel.Where.Expr)
 	if err != nil {
 		t.Fatalf("extractConditions: %v", err)
@@ -238,7 +242,10 @@ func TestExtractConditions_OR_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for OR, got nil")
@@ -251,7 +258,10 @@ func TestExtractConditions_UnsupportedExpr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for unsupported expression, got nil")
@@ -269,7 +279,10 @@ func TestComparisonToCondition_InvalidLeftOperand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for invalid left operand, got nil")
@@ -282,7 +295,10 @@ func TestComparisonToCondition_UnsupportedOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for unsupported operator, got nil")
@@ -312,14 +328,20 @@ func TestExtractLimit_NonInteger(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractSelectExprs_NilExprs(t *testing.T) {
-	result := extractSelectExprs(nil)
+	result, err := extractSelectExprs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for nil exprs: %v", err)
+	}
 	if result != nil {
 		t.Errorf("expected nil for nil exprs, got %v", result)
 	}
 }
 
 func TestExtractSelectExprs_EmptyExprs(t *testing.T) {
-	result := extractSelectExprs(&sqlparser.SelectExprs{})
+	result, err := extractSelectExprs(&sqlparser.SelectExprs{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty exprs: %v", err)
+	}
 	if result != nil {
 		t.Errorf("expected nil for empty exprs, got %v", result)
 	}
@@ -512,5 +534,90 @@ func TestQueryResultMarshalEmpty(t *testing.T) {
 	want := `{"results":[],"error":null}`
 	if got != want {
 		t.Errorf("JSON = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unsupported construct rejection tests (FND-02, CR-05)
+// ---------------------------------------------------------------------------
+
+func TestParse_RejectsDistinct(t *testing.T) {
+	_, err := Parse(`SELECT DISTINCT name FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for DISTINCT, got nil")
+	}
+	if !strings.Contains(err.Error(), "DISTINCT") {
+		t.Errorf("error should mention DISTINCT: %v", err)
+	}
+}
+
+func TestParse_RejectsOrderBy(t *testing.T) {
+	_, err := Parse(`SELECT * FROM users WHERE id = 'x' ORDER BY name`)
+	if err == nil {
+		t.Fatal("expected error for ORDER BY, got nil")
+	}
+	if !strings.Contains(err.Error(), "ORDER BY") {
+		t.Errorf("error should mention ORDER BY: %v", err)
+	}
+}
+
+func TestParse_RejectsGroupBy(t *testing.T) {
+	_, err := Parse(`SELECT name FROM users WHERE id = 'x' GROUP BY name`)
+	if err == nil {
+		t.Fatal("expected error for GROUP BY, got nil")
+	}
+	if !strings.Contains(err.Error(), "GROUP BY") {
+		t.Errorf("error should mention GROUP BY: %v", err)
+	}
+}
+
+func TestParse_RejectsHaving(t *testing.T) {
+	_, err := Parse(`SELECT * FROM users WHERE id = 'x' HAVING COUNT(*) > 1`)
+	if err == nil {
+		t.Fatal("expected error for HAVING, got nil")
+	}
+	if !strings.Contains(err.Error(), "HAVING") {
+		t.Errorf("error should mention HAVING: %v", err)
+	}
+}
+
+func TestParse_RejectsAggregationCount(t *testing.T) {
+	_, err := Parse(`SELECT COUNT(*) FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for aggregation, got nil")
+	}
+}
+
+func TestParse_RejectsNonColumnSelect(t *testing.T) {
+	_, err := Parse(`SELECT 1 FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for non-column SELECT, got nil")
+	}
+}
+
+func TestParse_RejectsStringLiteralSelect(t *testing.T) {
+	_, err := Parse(`SELECT 'hello' FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for string literal SELECT, got nil")
+	}
+}
+
+func TestParse_RejectsExpressionSelect(t *testing.T) {
+	_, err := Parse(`SELECT a + b FROM users WHERE id = 'x'`)
+	if err == nil {
+		t.Fatal("expected error for expression SELECT, got nil")
+	}
+}
+
+func TestParse_ValidQueryStillWorksAfterRejection(t *testing.T) {
+	q, err := Parse(`SELECT name, age FROM users WHERE id = 'x'`)
+	if err != nil {
+		t.Fatalf("valid query rejected: %v", err)
+	}
+	if q.From != "users" {
+		t.Errorf("From = %q, want %q", q.From, "users")
+	}
+	if len(q.Select) != 2 {
+		t.Errorf("Select = %v, want 2 columns", q.Select)
 	}
 }

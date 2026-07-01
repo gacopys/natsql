@@ -203,8 +203,8 @@ func TestBuildSchema_DefaultSeparator(t *testing.T) {
 	if s.Name != "test" {
 		t.Errorf("Name = %q, want %q", s.Name, "test")
 	}
-	if s.KeySeparator != "|" {
-		t.Errorf("KeySeparator = %q, want %q", s.KeySeparator, "|")
+	if s.KeySeparator != "/" {
+		t.Errorf("KeySeparator = %q, want %q", s.KeySeparator, "/")
 	}
 	if len(s.Columns) != 3 {
 		t.Fatalf("got %d columns, want 3", len(s.Columns))
@@ -241,7 +241,7 @@ views:
     columns:
       - {name: id, from: id, type: string, primary_key: true}
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -257,7 +257,7 @@ func TestLoadConfig_JSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
 	content := `{"views":[{"name":"v","source_stream":"s","key_fields":["k"],"columns":[{"name":"k","from":"k","type":"string","primary_key":true}]}]}`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -272,7 +272,7 @@ func TestLoadConfig_JSON(t *testing.T) {
 func TestLoadConfig_UnsupportedExt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(path, []byte("key=val"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("key=val"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)
@@ -284,7 +284,7 @@ func TestLoadConfig_UnsupportedExt(t *testing.T) {
 func TestLoadConfig_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	if err := os.WriteFile(path, []byte(":::invalid"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(":::invalid"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)
@@ -296,7 +296,7 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 func TestLoadConfig_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(path, []byte("{bad json}"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("{bad json}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)
@@ -320,6 +320,103 @@ func TestValidate_ValidMinimal(t *testing.T) {
 				SourceStream: "s",
 				KeyFields:    []string{"k"},
 				Columns:      []ColumnConfig{{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: true}},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_DuplicateColumnNames(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "k", From: "other", Type: ColumnTypeNumber},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate column name")
+	}
+}
+
+func TestValidate_KeyFieldNonexistentColumn(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"nonexistent"},
+				Columns:      []ColumnConfig{{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true}},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for key_field referencing non-existent column")
+	}
+}
+
+func TestValidate_KeyFieldNotPrimaryKey(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: false},
+					{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for key_field referencing non-primary-key column")
+	}
+}
+
+func TestValidate_PrimaryKeyNotInKeyFields(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"k"},
+				Columns: []ColumnConfig{
+					{Name: "k", From: "k", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for primary_key column not in key_fields")
+	}
+}
+
+func TestValidate_ConsistentKeyFieldsAndPrimaryKey(t *testing.T) {
+	cfg := &Config{
+		Views: []ViewConfig{
+			{
+				Name:         "v",
+				SourceStream: "s",
+				KeyFields:    []string{"a", "b"},
+				Columns: []ColumnConfig{
+					{Name: "a", From: "a", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "b", From: "b", Type: ColumnTypeString, PrimaryKey: true},
+					{Name: "val", From: "val", Type: ColumnTypeNumber},
+				},
 			},
 		},
 	}

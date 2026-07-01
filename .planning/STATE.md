@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Tech Debt Cleanup
+milestone: v1.2
+milestone_name: Code Review Remediation
 status: completed
-stopped_at: Milestone shipped
-last_updated: "2026-05-29T22:30:00Z"
-last_activity: 2026-05-29 -- v1.1 Tech Debt Cleanup milestone completed and archived
+stopped_at: Milestone v1.2 shipped
+last_updated: "2026-07-01T16:05:00.000Z"
+last_activity: 2026-07-01 -- v1.2 milestone completed
 progress:
   total_phases: 4
   completed_phases: 4
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 12
+  completed_plans: 12
   percent: 100
 ---
 
@@ -18,62 +18,43 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-29)
+See: .planning/PROJECT.md (updated 2026-07-01 after v1.2)
 
 **Core value:** A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
-**Current focus:** Next milestone (to be defined)
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Milestone: **v1.1 Tech Debt Cleanup — COMPLETE ✅**
-Status: All 12 requirements fixed, verified with `go test -race`, `go vet` clean, full black-box test suite passing, CI pipeline active.
-Shipped: 2026-05-29
-Archived: `.planning/milestones/v1.1-ROADMAP.md`, `.planning/milestones/v1.1-REQUIREMENTS.md`
-
-Progress: [██████████] 100%
+Status: ✅ v1.2 shipped (Phases 8-11 complete)
+Last activity: 2026-07-01 — v1.2 milestone completed
 
 ## Performance Metrics
 
-**Velocity:**
+**By Phase:**
 
-- Total plans completed: 4
-- Total phases: 4 (Query Engine Bug Fixes, Materializer Hardening, Transport & Code Health, Integration Verification)
-- Total tasks: ~16
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| 08 | 4 | - | - |
+| 09 | 3 | - | - |
+| 10 | 2 | - | - |
+| 11 | 3 | - | - |
 
 ## Accumulated Context
-
-### V1.1 Issues Resolved
-
-- **FIX-ENG-01**: PKLookupPlan now applies non-PK WHERE conditions as post-filter
-- **FIX-ENG-02**: Data race on Engine.kv eliminated via sync.Mutex
-- **FIX-ENG-03**: filterRow uses type-aware valuesEqual instead of fmt.Sprint coercion
-- **FIX-ENG-04**: SQL parser accepts boolean literals (true/false)
-- **FIX-MAT-01**: PK values sanitized via SanitizePK (underscore-prefixed encoding)
-- **FIX-MAT-02**: DLQ publish failure → Nak (not Ack), preventing silent data loss
-- **FIX-MAT-03**: Engine.Start partial-init cleanup on failure
-- **FIX-MAT-04**: JSON integer precision via UseNumber() decoder
-- **FIX-TRN-01**: HTTP read/write/idle timeouts configured
-- **FIX-TRN-02**: HTTP query endpoint enforces 1MB body size limit
-- **FIX-TRN-03**: NATS query handler uses bounded 30s context timeout
-- **FIX-TRN-04**: Dead code removed, test flakiness eliminated
 
 ### Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| No new features in v1.1 | Focus exclusively on code quality for clean base | ✓ Confirmed |
-| Continue phase numbering from v1.0 | Phases 4+ instead of restarting | ✓ Set |
-| Group fixes by component (Engine, Materializer, Transport) | Each phase addresses a coherent set of related fixes | ✓ Adopted |
-| Include dedicated integration verification phase | Ensures all fixes work together without regression | ✓ Phase 7 |
-| Underscore-prefixed KV key encoding | All result chars are valid NATS key chars, avoids URL encoding issues | ✓ Good |
-| Black-box tests through public API only | Validates public contract end-to-end, no internal state inspection | ✓ Good |
+| Verify before fixing | Prevents working on non-issues; each finding confirmed or dismissed first | ✓ Set |
+| Coarse granularity (4 phases) | Config granularity=coarse; 6 research waves compressed into 4 delivery phases | ✓ Set |
+| Phase 9 depends on Phase 8 | Materializer needs canonical PK encoder (FND-01) from Foundation | ✓ Set |
+| Phase 10 depends on Phase 8 | Query engine needs canonical PK encoder (FND-01) from Foundation | ✓ Set |
+| Phase 11 after all behavioral phases | Cleanup should come after all behavioral changes are verified and merged | ✓ Set |
 
-### Pending Todos
+### Tech Debt Deferred to v2
 
-- None. Next: start next milestone with `/gsd-new-milestone`
-
-## Session Continuity
-
-Last session: 2026-05-29 (milestone completion)
-Resume: `/gsd-new-milestone` to define next milestone
+- Range scans (>, <, >=, <=)
+- Secondary indexes on non-PK columns
+- Delete/tombstone semantics for materialized rows
+- Per-view KV buckets for full isolation

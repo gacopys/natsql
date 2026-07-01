@@ -40,13 +40,31 @@ func Parse(sql string) (*ValidatedQuery, error) {
 		return nil, errors.New("only simple SELECT FROM view is supported")
 	}
 
+	// Reject unsupported SQL constructs (FND-02)
+	if sel.Distinct {
+		return nil, errors.New("unsupported: DISTINCT is not supported in v1")
+	}
+	if sel.OrderBy != nil {
+		return nil, errors.New("unsupported: ORDER BY is not supported in v1")
+	}
+	if sel.GroupBy != nil {
+		return nil, errors.New("unsupported: GROUP BY is not supported in v1")
+	}
+	if sel.Having != nil {
+		return nil, errors.New("unsupported: HAVING is not supported in v1")
+	}
+
 	q := &ValidatedQuery{
 		From: tblName.Name.String(),
 	}
 
-	// Extract SELECT expressions
+	// Extract SELECT expressions (after rejection checks)
 	if sel.SelectExprs != nil {
-		q.Select = extractSelectExprs(sel.SelectExprs)
+		var selectErr error
+		q.Select, selectErr = extractSelectExprs(sel.SelectExprs)
+		if selectErr != nil {
+			return nil, selectErr
+		}
 	}
 
 	// Extract WHERE clause
@@ -72,16 +90,16 @@ func Parse(sql string) (*ValidatedQuery, error) {
 }
 
 // extractSelectExprs converts vitess SelectExprs to column name slice.
-// Returns nil for SELECT *.
-func extractSelectExprs(exprs *sqlparser.SelectExprs) []string {
+// Returns nil for SELECT *. Returns an error for non-column/non-star expressions.
+func extractSelectExprs(exprs *sqlparser.SelectExprs) ([]string, error) {
 	if exprs == nil || len(exprs.Exprs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Check if single "*"
 	if len(exprs.Exprs) == 1 {
 		if _, ok := exprs.Exprs[0].(*sqlparser.StarExpr); ok {
-			return nil // nil means "*"
+			return nil, nil // nil means "*"
 		}
 	}
 
@@ -91,14 +109,14 @@ func extractSelectExprs(exprs *sqlparser.SelectExprs) []string {
 		case *sqlparser.AliasedExpr:
 			col, ok := e.Expr.(*sqlparser.ColName)
 			if !ok {
-				continue
+				return nil, fmt.Errorf("unsupported SELECT expression: only simple column references and * are supported in v1 (got %T)", e.Expr)
 			}
 			cols = append(cols, col.Name.String())
 		case *sqlparser.StarExpr:
 			cols = append(cols, "*")
 		}
 	}
-	return cols
+	return cols, nil
 }
 
 // extractConditions recursively walks a WHERE expression and extracts conditions.

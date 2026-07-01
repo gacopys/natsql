@@ -1,0 +1,40 @@
+name: Examples
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+jobs:
+  example:
+    name: ${{ matrix.example }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - 01-hello-natsql
+          - 02-composite-keys
+          - 03-malformed-events
+          - 04-multiple-views
+          - 05-library-embed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/${{ matrix.example }}/go.mod
+      - name: Run
+        run: go run .
+        working-directory: examples/${{ matrix.example }}
+
+  perf-benchmark:
+    name: 07-perf-benchmark (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/07-perf-benchmark/go.mod
+      - name: Build
+        run: go build .
+        working-directory: examples/07-perf-benchmark

@@ -27,7 +27,7 @@ func TestNewWriter(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	w := NewWriter(kvb, "users")
+	w := NewWriter(kvb, "users", "|")
 	if w == nil {
 		t.Fatal("NewWriter returned nil")
 	}
@@ -46,10 +46,10 @@ func TestWriter_Apply_WritesRowAtCorrectKey(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	w := NewWriter(kvb, "users")
+	w := NewWriter(kvb, "users", "|")
 
 	mut := &RowMutation{
-		PK: "abc123",
+		PkParts: []string{"abc123"},
 		RowData: map[string]any{
 			"user_id": "abc123",
 			"name":    "Alice",
@@ -65,7 +65,7 @@ func TestWriter_Apply_WritesRowAtCorrectKey(t *testing.T) {
 	}
 
 	// Verify the row exists at the correct key
-	expectedKey := kv.PkKey("users", "abc123")
+	expectedKey := kv.BuildPkKey("users", []string{"abc123"}, "|")
 	entry, err := kvb.Get(ctx, expectedKey)
 	if err != nil {
 		t.Fatalf("Get(%q) failed: %v", expectedKey, err)
@@ -118,11 +118,11 @@ func TestWriter_Apply_IdempotentOverwrite(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	w := NewWriter(kvb, "users")
+	w := NewWriter(kvb, "users", "|")
 
 	// First write
 	mut1 := &RowMutation{
-		PK: "abc123",
+		PkParts: []string{"abc123"},
 		RowData: map[string]any{
 			"user_id": "abc123",
 			"name":    "Alice",
@@ -136,7 +136,7 @@ func TestWriter_Apply_IdempotentOverwrite(t *testing.T) {
 
 	// Second write (overwrite with different data)
 	mut2 := &RowMutation{
-		PK: "abc123",
+		PkParts: []string{"abc123"},
 		RowData: map[string]any{
 			"user_id": "abc123",
 			"name":    "Alice Updated",
@@ -149,7 +149,7 @@ func TestWriter_Apply_IdempotentOverwrite(t *testing.T) {
 	}
 
 	// Verify the data was updated
-	entry, err := kvb.Get(ctx, kv.PkKey("users", "abc123"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("users", []string{"abc123"}, "|"))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -167,8 +167,12 @@ func TestWriter_Apply_IdempotentOverwrite(t *testing.T) {
 	if !ok {
 		t.Fatal("_meta missing after overwrite")
 	}
-	if meta["stream_seq"] != float64(43) {
-		t.Errorf("_meta.stream_seq = %d, want 43", int(meta["stream_seq"].(float64)))
+	seq, ok := meta["stream_seq"].(float64)
+	if !ok {
+		t.Fatalf("expected float64, got %T", meta["stream_seq"])
+	}
+	if seq != float64(43) {
+		t.Errorf("_meta.stream_seq = %d, want 43", int(seq))
 	}
 }
 
@@ -185,14 +189,14 @@ func TestWriter_Apply_ContextCancellation(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	w := NewWriter(kvb, "users")
+	w := NewWriter(kvb, "users", "|")
 
-	// Create a cancelled context
+	// Create a canceled context
 	cancelledCtx, cancelFn := context.WithCancel(context.Background())
 	cancelFn() // Cancel immediately
 
 	mut := &RowMutation{
-		PK: "abc123",
+		PkParts: []string{"abc123"},
 		RowData: map[string]any{
 			"user_id": "abc123",
 		},
@@ -202,7 +206,7 @@ func TestWriter_Apply_ContextCancellation(t *testing.T) {
 
 	err = w.Apply(cancelledCtx, mut)
 	if err == nil {
-		t.Fatal("expected error for cancelled context, got nil")
+		t.Fatal("expected error for canceled context, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
@@ -222,7 +226,7 @@ func TestWriter_Apply_NilMutation_ReturnsError(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	w := NewWriter(kvb, "users")
+	w := NewWriter(kvb, "users", "|")
 	err = w.Apply(ctx, nil)
 	if err == nil {
 		t.Fatal("expected error for nil mutation, got nil")

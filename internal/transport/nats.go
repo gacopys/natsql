@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -30,14 +31,21 @@ func RegisterNATSHandler(nc *nats.Conn, handler QueryHandler) (*nats.Subscriptio
 		data, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			errResp := fmt.Sprintf(`{"results":[],"error":"internal error: %s"}`, marshalErr.Error())
-			msg.Respond([]byte(errResp))
+			if respondErr := msg.Respond([]byte(errResp)); respondErr != nil {
+				slog.Warn("failed to respond with error to NATS query", "error", respondErr)
+			}
 			return
 		}
-		msg.Respond(data)
+		if err := msg.Respond(data); err != nil {
+			slog.Warn("failed to respond to NATS query", "error", err)
+		}
 	})
 	if err != nil {
 		return nil, fmt.Errorf("subscribing to natsql.query: %w", err)
 	}
-	nc.Flush()
+	if err := nc.Flush(); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, fmt.Errorf("flushing subscription: %w", err)
+	}
 	return sub, nil
 }

@@ -1,3 +1,14 @@
+// Package kv provides NATS JetStream Key-Value operations for natsql.
+//
+// This package handles schema storage, row read/write, and canonical
+// primary-key encoding (BuildPkKey). All state is stored in a single
+// JetStream KV bucket.
+//
+// Known limitations:
+//   - Tombstone/delete semantics are not yet supported (planned for v2).
+//     Rows cannot be removed from the materialized view once written.
+//     A delete mode (operation field, subject convention, or tombstone
+//     predicate) will be designed and implemented in a future release.
 package kv
 
 import (
@@ -12,7 +23,6 @@ import (
 
 const (
 	DefaultBucket = "natsql-views" // D-06: single bucket for all views
-	SchemaPrefix  = "schemas:"     // D-08: schema key prefix
 )
 
 // ViewSchema is the immutable schema for a materialized view, stored in KV.
@@ -41,21 +51,14 @@ func InitBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jets
 	return js.CreateOrUpdateKeyValue(ctx, cfg)
 }
 
-// MustInitBucket is a convenience wrapper around InitBucket that panics on error.
-func MustInitBucket(ctx context.Context, js jetstream.JetStream, replicas int) jetstream.KeyValue {
-	kv, err := InitBucket(ctx, js, replicas)
-	if err != nil {
-		panic(fmt.Sprintf("failed to init bucket: %v", err))
-	}
-	return kv
-}
-
 // PkKey returns the KV key for a row in the given view.
 // Format: "{view_name}/pk/{pkValue}" per D-07 (adapted for NATS KV key restrictions).
 // NATS KV keys only support [a-zA-Z0-9_\-./=], so '/' is used instead of ':'.
 // PK values are sanitized to prevent key injection from special characters.
+//
+// Deprecated: Use BuildPkKey instead. Kept for backward compatibility.
 func PkKey(viewName, pkValue string) string {
-	return viewName + "/pk/" + SanitizePK(pkValue)
+	return BuildPkKey(viewName, []string{pkValue}, "")
 }
 
 // sanitizeKVPK encodes characters not allowed in NATS KV keys.
@@ -81,6 +84,26 @@ func SanitizePK(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// BuildPkKey constructs the full KV key for a row in the given view.
+// This is the SINGLE canonical function for PK key construction.
+// Both materializer (write path) and query engine (read path) MUST use this.
+//
+// Takes raw PK component values (not sanitized), joins them with the separator,
+// sanitizes PK part values (not the separator), and returns "{viewName}/pk/{sanitized}".
+func BuildPkKey(viewName string, pkParts []string, separator string) string {
+	// 1. Sanitize each PK part individually (preserves separator characters)
+	sanitizedParts := make([]string, len(pkParts))
+	for i, part := range pkParts {
+		sanitizedParts[i] = SanitizePK(part)
+	}
+
+	// 2. Join sanitized parts with separator (separator is NOT sanitized)
+	pk := strings.Join(sanitizedParts, separator)
+
+	// 3. Build full key
+	return viewName + "/pk/" + pk
 }
 
 // SchemaKey returns the KV key for the schema of a view.
@@ -117,38 +140,4 @@ func LoadSchema(ctx context.Context, kv jetstream.KeyValue, viewName string) (*V
 		return nil, fmt.Errorf("unmarshaling schema: %w", err)
 	}
 	return &schema, nil
-}
-
-// EncodePKValue returns a string representation of a PK value for use in KV keys.
-// Strings are returned as-is (must not contain ":").
-// Numbers are formatted with fmt.Sprint.
-// Booleans become "true" or "false".
-// nil returns empty string.
-func EncodePKValue(val any) string {
-	switch v := val.(type) {
-	case string:
-		if strings.ContainsAny(v, "/:") {
-			panic(fmt.Sprintf("EncodePKValue: string value %q contains '/' or ':' which are not allowed in KV keys", v))
-		}
-		return v
-	case int:
-		return fmt.Sprint(v)
-	case int32:
-		return fmt.Sprint(v)
-	case int64:
-		return fmt.Sprint(v)
-	case float32:
-		return fmt.Sprint(v)
-	case float64:
-		return fmt.Sprint(v)
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	case nil:
-		return ""
-	default:
-		return fmt.Sprint(v)
-	}
 }

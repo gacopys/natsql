@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	"github.com/gacopys/natsql/internal/kv"
 )
@@ -95,15 +95,18 @@ func TestBuildPlanPKLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan failed: %v", err)
 	}
-	if _, ok := plan.(*PKLookupPlan); !ok {
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
 		t.Fatalf("expected PKLookupPlan, got %T", plan)
 	}
-	pkPlan := plan.(*PKLookupPlan)
 	if pkPlan.ViewName != "test_users" {
 		t.Errorf("ViewName = %q, want %q", pkPlan.ViewName, "test_users")
 	}
-	if pkPlan.PkValue != "abc" {
-		t.Errorf("PkValue = %q, want %q", pkPlan.PkValue, "abc")
+	if len(pkPlan.PkParts) != 1 || pkPlan.PkParts[0] != "abc" {
+		t.Errorf("PkParts = %v, want %v", pkPlan.PkParts, []string{"abc"})
+	}
+	if pkPlan.Separator != "|" {
+		t.Errorf("Separator = %q, want %q", pkPlan.Separator, "|")
 	}
 }
 
@@ -134,6 +137,85 @@ func TestBuildPlanFullScanNonEqPK(t *testing.T) {
 	}
 	if _, ok := plan.(*FullScanPlan); !ok {
 		t.Fatalf("expected FullScanPlan for non-equality PK, got %T", plan)
+	}
+}
+
+func TestBuildPlan_ContradictoryPK_ReturnsEmptyPlan(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "a"},
+			{Column: "id", Op: OpEq, Value: "b"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	if _, ok := plan.(*EmptyPlan); !ok {
+		t.Fatalf("expected EmptyPlan for contradictory PK, got %T", plan)
+	}
+}
+
+func TestBuildPlan_DuplicatePK_NotContradictory(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "a"},
+			{Column: "id", Op: OpEq, Value: "a"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
+		t.Fatalf("expected PKLookupPlan for duplicate same-value PK, got %T", plan)
+	}
+	// All conditions should be in Where (including the PK condition)
+	if len(pkPlan.Where) != 2 {
+		t.Errorf("expected 2 Where conditions (all preserved), got %d", len(pkPlan.Where))
+	}
+}
+
+func TestBuildPlan_AllConditionsKeptAsPostFilters(t *testing.T) {
+	q := &ValidatedQuery{
+		Select: nil,
+		From:   "test_users",
+		Where: []Condition{
+			{Column: "id", Op: OpEq, Value: "u1"},
+			{Column: "name", Op: OpEq, Value: "Alice"},
+		},
+	}
+	plan, err := BuildPlan(q, testSchema)
+	if err != nil {
+		t.Fatalf("BuildPlan failed: %v", err)
+	}
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
+		t.Fatalf("expected PKLookupPlan, got %T", plan)
+	}
+	// All conditions should be in Where (both PK and non-PK)
+	if len(pkPlan.Where) != 2 {
+		t.Errorf("expected 2 Where conditions (all preserved), got %d", len(pkPlan.Where))
+	}
+}
+
+func TestEmptyPlan_Execute(t *testing.T) {
+	// EmptyPlan returns empty results regardless of context or KV
+	plan := &EmptyPlan{}
+	results, err := plan.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("EmptyPlan.Execute failed: %v", err)
+	}
+	if results == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
 	}
 }
 
@@ -219,7 +301,7 @@ func setupTestData(t *testing.T, ctx context.Context, js jetstream.JetStream) je
 		if err != nil {
 			t.Fatalf("marshal row failed: %v", err)
 		}
-		key := kv.PkKey(testSchema.Name, row.pk)
+		key := kv.BuildPkKey(testSchema.Name, []string{row.pk}, testSchema.KeySeparator)
 		if _, err := kvb.Put(ctx, key, data); err != nil {
 			t.Fatalf("Put(%q) failed: %v", key, err)
 		}
@@ -243,9 +325,10 @@ func TestPKLookupFound(t *testing.T) {
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
-		ViewName: "test_users",
-		PkValue:  "u1",
-		Columns:  nil, // all columns
+		ViewName:  "test_users",
+		PkParts:   []string{"u1"},
+		Separator: "|",
+		Columns:   nil, // all columns
 	}
 
 	results, err := plan.Execute(ctx, kvb)
@@ -274,9 +357,10 @@ func TestPKLookupNotFound(t *testing.T) {
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
-		ViewName: "test_users",
-		PkValue:  "nonexistent",
-		Columns:  nil,
+		ViewName:  "test_users",
+		PkParts:   []string{"nonexistent"},
+		Separator: "|",
+		Columns:   nil,
 	}
 
 	results, err := plan.Execute(ctx, kvb)
@@ -376,9 +460,10 @@ func TestProjectionSelectStar(t *testing.T) {
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
-		ViewName: "test_users",
-		PkValue:  "u1",
-		Columns:  nil, // SELECT *
+		ViewName:  "test_users",
+		PkParts:   []string{"u1"},
+		Separator: "|",
+		Columns:   nil, // SELECT *
 	}
 
 	results, err := plan.Execute(ctx, kvb)
@@ -408,9 +493,10 @@ func TestProjectionSelectCols(t *testing.T) {
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
-		ViewName: "test_users",
-		PkValue:  "u1",
-		Columns:  []string{"name", "age"},
+		ViewName:  "test_users",
+		PkParts:   []string{"u1"},
+		Separator: "|",
+		Columns:   []string{"name", "age"},
 	}
 
 	results, err := plan.Execute(ctx, kvb)
@@ -426,7 +512,8 @@ func TestProjectionSelectCols(t *testing.T) {
 	if results[0]["name"] != "Alice" {
 		t.Errorf("name = %v, want %q", results[0]["name"], "Alice")
 	}
-	if results[0]["age"] != float64(30) {
+	// UseNumber: stored float64(30) decoded as json.Number("30")
+	if !valuesEqual(results[0]["age"], float64(30)) {
 		t.Errorf("age = %v, want %v", results[0]["age"], float64(30))
 	}
 }
@@ -442,9 +529,10 @@ func TestProjectionMissingCol(t *testing.T) {
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
-		ViewName: "test_users",
-		PkValue:  "u1",
-		Columns:  []string{"nonexistent"},
+		ViewName:  "test_users",
+		PkParts:   []string{"u1"},
+		Separator: "|",
+		Columns:   []string{"nonexistent"},
 	}
 
 	results, err := plan.Execute(ctx, kvb)
@@ -464,14 +552,163 @@ func TestProjectionMissingCol(t *testing.T) {
 	}
 }
 
+func TestProjectionSelectStarExcludesMeta(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Store schema
+	if err := kv.StoreSchema(ctx, kvb, testSchema.Name, testSchema); err != nil {
+		t.Fatalf("StoreSchema failed: %v", err)
+	}
+
+	// Insert a row WITH _meta data (simulates what materializer stores)
+	rowWithMeta := map[string]any{
+		"id":     "meta_test",
+		"name":   "MetaUser",
+		"age":    float64(25),
+		"active": true,
+		"_meta":  map[string]any{"stream_seq": uint64(42)},
+	}
+	data, err := json.Marshal(rowWithMeta)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	key := kv.BuildPkKey(testSchema.Name, []string{"meta_test"}, testSchema.KeySeparator)
+	if _, err := kvb.Put(ctx, key, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// SELECT * (Columns=nil) — should exclude _meta
+	plan := &PKLookupPlan{
+		ViewName:  testSchema.Name,
+		PkParts:   []string{"meta_test"},
+		Separator: testSchema.KeySeparator,
+		Columns:   nil, // SELECT *
+	}
+
+	results, err := plan.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// _meta must NOT be in SELECT * results (D-04)
+	if _, hasMeta := results[0]["_meta"]; hasMeta {
+		t.Error("SELECT * should not include _meta field")
+	}
+
+	// Schema-declared columns should still be present
+	if results[0]["id"] != "meta_test" {
+		t.Errorf("id = %v, want %q", results[0]["id"], "meta_test")
+	}
+	if results[0]["name"] != "MetaUser" {
+		t.Errorf("name = %v, want %q", results[0]["name"], "MetaUser")
+	}
+
+	// Explicit column selection should still work unchanged (D-06)
+	plan2 := &PKLookupPlan{
+		ViewName:  testSchema.Name,
+		PkParts:   []string{"meta_test"},
+		Separator: testSchema.KeySeparator,
+		Columns:   []string{"name", "_meta"}, // explicit _meta selection
+	}
+	results2, err := plan2.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results2) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results2))
+	}
+	// When explicitly selected, _meta should be present because
+	// explicit column selection doesn't filter _-prefixed keys (D-06)
+	if _, hasMeta := results2[0]["_meta"]; !hasMeta {
+		t.Error("explicit _meta column select should include _meta")
+	}
+}
+
+func TestLargeIntegerPrecision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Store schema
+	schema := &kv.ViewSchema{
+		Name:         "bigint_test",
+		Columns:      []kv.ColumnSchema{{Name: "id", Type: "string", PrimaryKey: true}, {Name: "val", Type: "number"}},
+		KeyFields:    []string{"id"},
+		KeySeparator: "|",
+	}
+	if err := kv.StoreSchema(ctx, kvb, schema.Name, schema); err != nil {
+		t.Fatalf("StoreSchema failed: %v", err)
+	}
+
+	// 9007199254740993 is 2^53 + 1 — cannot be exactly represented as float64
+	// json.Marshal of this value as a raw number preserves it
+	bigVal := "9007199254740993"
+	rawJSON := `{"id":"big1","val":` + bigVal + `}`
+	data := []byte(rawJSON)
+	key := kv.BuildPkKey(schema.Name, []string{"big1"}, schema.KeySeparator)
+	if _, err := kvb.Put(ctx, key, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// Read back via PK lookup — value should be json.Number, not truncated float64
+	plan := &PKLookupPlan{
+		ViewName:  schema.Name,
+		PkParts:   []string{"big1"},
+		Separator: schema.KeySeparator,
+		Columns:   nil,
+	}
+	results, err := plan.Execute(ctx, kvb)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	val := results[0]["val"]
+	num, ok := val.(json.Number)
+	if !ok {
+		t.Fatalf("expected json.Number, got %T with value %v", val, val)
+	}
+	if num.String() != bigVal {
+		t.Errorf("val = %s, want %s (precision lost)", num.String(), bigVal)
+	}
+
+	// Also test valuesEqual with json.Number vs int64
+	if !valuesEqual(val, int64(9007199254740993)) {
+		t.Error("valuesEqual(json.Number('9007199254740993'), int64(9007199254740993)) should be true")
+	}
+}
+
 func TestTypedJSON(t *testing.T) {
 	// Verify that QueryResult produces typed JSON per D-30
 	r := QueryResult{
 		Results: []map[string]any{
 			{
-				"name":   "Alice",
-				"age":    float64(30),
-				"active": true,
+				"name":     "Alice",
+				"age":      float64(30),
+				"active":   true,
 				"null_col": nil,
 			},
 		},
@@ -527,5 +764,83 @@ func TestViewNotFound(t *testing.T) {
 	}
 	if schema != nil {
 		t.Fatal("expected nil schema for nonexistent view")
+	}
+}
+
+func TestPKEncoding_SpecialCharacters_WriteRead(t *testing.T) {
+	// Black-box integration test: write a row with special PK characters
+	// using BuildPkKey (simulating write path), then read it back using
+	// PKLookupPlan with BuildPkKey (simulating read path).
+	// Proves write and read produce identical KV keys.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	// Use a test schema with "|" separator
+	schema := &kv.ViewSchema{
+		Name:         "special_pk_test",
+		Columns:      []kv.ColumnSchema{{Name: "id", Type: "string", PrimaryKey: true}},
+		KeyFields:    []string{"id"},
+		KeySeparator: "|",
+	}
+
+	// PK values containing each special character
+	specialPKs := []struct {
+		pkParts []string
+		label   string
+	}{
+		{[]string{"abc"}, "plain"},
+		{[]string{"a_b"}, "underscore"},
+		{[]string{"a|b"}, "pipe"},
+		{[]string{"a/b"}, "slash"},
+		{[]string{"a*b"}, "star"},
+		{[]string{"a>b"}, "greater"},
+		{[]string{"a__b"}, "double_underscore"},
+		{[]string{"a|b/c*d>e_f"}, "all_special"},
+	}
+
+	// Write test data
+	for _, sp := range specialPKs {
+		rowData := map[string]any{
+			"id":   sp.pkParts[0],
+			"name": sp.label,
+		}
+		data, err := json.Marshal(rowData)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		key := kv.BuildPkKey(schema.Name, sp.pkParts, schema.KeySeparator)
+		if _, err := kvb.Put(ctx, key, data); err != nil {
+			t.Fatalf("Put(%q) failed: %v", key, err)
+		}
+	}
+
+	// Read back using PKLookupPlan (same BuildPkKey call)
+	for _, sp := range specialPKs {
+		plan := &PKLookupPlan{
+			ViewName:  schema.Name,
+			PkParts:   sp.pkParts,
+			Separator: schema.KeySeparator,
+			Columns:   nil,
+		}
+		results, err := plan.Execute(ctx, kvb)
+		if err != nil {
+			t.Fatalf("Execute failed for %q: %v", sp.label, err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result for %q (pkParts=%v), got %d", sp.label, sp.pkParts, len(results))
+			continue
+		}
+		if results[0]["name"] != sp.label {
+			t.Errorf("name mismatch for %q: got %v, want %q", sp.label, results[0]["name"], sp.label)
+		}
 	}
 }

@@ -40,10 +40,11 @@ type Plan interface {
 
 // PKLookupPlan is a direct primary key point lookup.
 type PKLookupPlan struct {
-	ViewName string
-	PkValue  string
-	Columns  []string    // nil = all
-	Where    []Condition // non-PK conditions to apply as post-filter
+	ViewName  string
+	PkParts   []string    // raw PK component values (not sanitized, not joined)
+	Separator string      // separator used to join PkParts
+	Columns   []string    // nil = all
+	Where     []Condition // non-PK conditions to apply as post-filter
 }
 
 // FullScanPlan iterates all keys for a view, applies filters client-side.
@@ -54,8 +55,19 @@ type FullScanPlan struct {
 	Limit    int
 }
 
+// EmptyPlan is returned when WHERE predicates are contradictory
+// (e.g., WHERE id = 'a' AND id = 'b'). Execution returns an empty
+// result set immediately with no KV I/O.
+type EmptyPlan struct {
+	Columns []string
+}
+
+func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+	return []map[string]any{}, nil
+}
+
 // QueryResult is the JSON response envelope per D-29.
 type QueryResult struct {
 	Results []map[string]any `json:"results"`
-	Error   *string         `json:"error"`
+	Error   *string          `json:"error"`
 }

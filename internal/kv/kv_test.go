@@ -6,26 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/gacopys/natsql/internal/testutil"
 )
-
-func TestPkKey(t *testing.T) {
-	result := PkKey("users", "abc123")
-	expected := "users/pk/abc123"
-	if result != expected {
-		t.Errorf("PkKey(\"users\", \"abc123\") = %q, want %q", result, expected)
-	}
-}
-
-func TestPkKey_SpecialChars(t *testing.T) {
-	result := PkKey("my-view", "user@example.com")
-	expected := "my-view/pk/user@example.com"
-	if result != expected {
-		t.Errorf("PkKey = %q, want %q", result, expected)
-	}
-}
 
 func TestSchemaKey(t *testing.T) {
 	result := SchemaKey("users")
@@ -35,78 +20,11 @@ func TestSchemaKey(t *testing.T) {
 	}
 }
 
-func TestEncodePKValue_String(t *testing.T) {
-	result := EncodePKValue("hello")
-	if result != "hello" {
-		t.Errorf("EncodePKValue(\"hello\") = %q, want %q", result, "hello")
-	}
-}
-
-func TestEncodePKValue_WithSlash_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for string containing '/', got none")
-		}
-	}()
-	EncodePKValue("abc/123")
-}
-
-func TestEncodePKValue_WithColon_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for string containing ':', got none")
-		}
-	}()
-	EncodePKValue("abc:123")
-}
-
-func TestEncodePKValue_Int(t *testing.T) {
-	tests := []struct {
-		val  any
-		want string
-	}{
-		{int(42), "42"},
-		{int64(123456789), "123456789"},
-		{int32(-5), "-5"},
-	}
-	for _, tt := range tests {
-		got := EncodePKValue(tt.val)
-		if got != tt.want {
-			t.Errorf("EncodePKValue(%v) = %q, want %q", tt.val, got, tt.want)
-		}
-	}
-}
-
-func TestEncodePKValue_Float(t *testing.T) {
-	result := EncodePKValue(float64(3.14))
-	if result == "" {
-		t.Error("EncodePKValue(3.14) returned empty")
-	}
-}
-
-func TestEncodePKValue_Bool(t *testing.T) {
-	if EncodePKValue(true) != "true" {
-		t.Error("EncodePKValue(true) should be 'true'")
-	}
-	if EncodePKValue(false) != "false" {
-		t.Error("EncodePKValue(false) should be 'false'")
-	}
-}
-
-func TestEncodePKValue_Nil(t *testing.T) {
-	result := EncodePKValue(nil)
-	if result != "" {
-		t.Errorf("EncodePKValue(nil) = %q, want empty", result)
-	}
-}
-
 func TestInitBucket_CreatesBucket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -130,9 +48,7 @@ func TestStoreAndLoadSchema_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -183,9 +99,7 @@ func TestLoadSchema_MissingKey_ReturnsNil(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -205,9 +119,7 @@ func TestStoreSchema_OverwriteUpdatesSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -262,83 +174,49 @@ func TestPkKey_Sanitization(t *testing.T) {
 	}
 }
 
-func TestEncodePKValue_Float32(t *testing.T) {
-	result := EncodePKValue(float32(3.14))
-	if result == "" {
-		t.Error("EncodePKValue(float32) returned empty")
+func TestBuildPkKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		viewName  string
+		pkParts   []string
+		separator string
+		want      string
+	}{
+		{"single part", "users", []string{"abc"}, "|", "users/pk/abc"},
+		{"composite", "users", []string{"a", "b"}, "|", "users/pk/a|b"},
+		{"underscore", "users", []string{"a_b"}, "|", "users/pk/a__b"},
+		{"pipe", "users", []string{"a|b"}, "|", "users/pk/a_pb"},
+		{"slash", "users", []string{"a/b"}, "|", "users/pk/a_sb"},
+		{"star", "users", []string{"a*b"}, "|", "users/pk/a_ab"},
+		{"greater", "users", []string{"a>b"}, "|", "users/pk/a_gb"},
+		{"double underscore", "users", []string{"a__b"}, "|", "users/pk/a____b"},
+		{"custom sep slash", "users", []string{"hello", "world"}, "/", "users/pk/hello/world"},
+		{"custom sep colon", "users", []string{"a", "b"}, ":", "users/pk/a:b"},
+		{"empty parts", "users", []string{""}, "|", "users/pk/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildPkKey(tt.viewName, tt.pkParts, tt.separator)
+			if got != tt.want {
+				t.Errorf("BuildPkKey(%q, %v, %q) = %q, want %q", tt.viewName, tt.pkParts, tt.separator, got, tt.want)
+			}
+		})
 	}
 }
 
-func TestEncodePKValue_DefaultCase(t *testing.T) {
-	result := EncodePKValue(struct{ name string }{name: "test"})
-	if result == "" {
-		t.Error("EncodePKValue(struct) returned empty")
+func TestPkKey_BackwardCompat(t *testing.T) {
+	result := PkKey("users", "abc123")
+	expected := "users/pk/abc123"
+	if result != expected {
+		t.Errorf("PkKey backward compat: got %q, want %q", result, expected)
 	}
-}
-
-func TestMustInitBucket_Success(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
-
-	kv := MustInitBucket(ctx, js, 1)
-	if kv == nil {
-		t.Fatal("MustInitBucket returned nil")
-	}
-}
-
-func TestMustInitBucket_PanicsOnError(t *testing.T) {
-	ctx := context.Background()
-	// nil JetStream should cause panic
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic with nil JetStream, got none")
-		}
-	}()
-	MustInitBucket(ctx, nil, 1)
 }
 
 // Helpers
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
+func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-
-	opts := &server.Options{
-		Port:           -1,
-		JetStream:      true,
-		StoreDir:       t.TempDir(),
-		ServerName:     "test-server",
-		NoLog:          true,
-		NoSigs:         true,
-	}
-
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("failed to start NATS server: %v", err)
-	}
-	srv.Start()
-
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready within 5 seconds")
-	}
-
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("failed to connect: %v", err)
-	}
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("failed to create JetStream context: %v", err)
-	}
-
-	return srv, nc, js
+	return testutil.StartEmbeddedNATS(t)
 }
 
 func isNATSKeyNotFound(err error) bool {

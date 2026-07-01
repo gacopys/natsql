@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,12 +15,12 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	natsql "github.com/gacopys/natsql"
 	natsqlpkg "github.com/gacopys/natsql/internal/cfg"
 	"github.com/gacopys/natsql/internal/engine"
 	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 // TestEngineEndToEnd verifies the full write path:
@@ -28,9 +29,7 @@ func TestEngineEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	// Create source stream
 	streamName := "TEST_ENG_E2E"
@@ -48,7 +47,7 @@ func TestEngineEndToEnd(t *testing.T) {
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 					{Name: "age", From: "age", Type: natsqlpkg.ColumnTypeNumber},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -77,9 +76,9 @@ func TestEngineEndToEnd(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry, err := kvb.Get(ctx, kv.PkKey("e2e_users", "abc123"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("e2e_users", []string{"abc123"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.PkKey("e2e_users", "abc123"), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("e2e_users", []string{"abc123"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("row not found in KV — event was not materialized")
@@ -123,7 +122,7 @@ func TestEngineEndToEnd(t *testing.T) {
 	}
 
 	// Row should persist after close (KV is persistent)
-	entry2, err := kvb.Get(ctx, kv.PkKey("e2e_users", "abc123"))
+	entry2, err := kvb.Get(ctx, kv.BuildPkKey("e2e_users", []string{"abc123"}, ""))
 	if err != nil {
 		t.Fatalf("Get after close failed: %v", err)
 	}
@@ -138,9 +137,7 @@ func TestEngineMultipleViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	// Create two streams
 	streamA := "TEST_ENG_MV_A"
@@ -159,7 +156,7 @@ func TestEngineMultipleViews(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "email", From: "email", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 			{
 				Name:         "mv_orders",
@@ -169,7 +166,7 @@ func TestEngineMultipleViews(t *testing.T) {
 					{Name: "order_id", From: "order_id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "amount", From: "amount", Type: natsqlpkg.ColumnTypeNumber},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -200,7 +197,7 @@ func TestEngineMultipleViews(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry1, err := kvb.Get(ctx, kv.PkKey("mv_users", "u1"))
+	entry1, err := kvb.Get(ctx, kv.BuildPkKey("mv_users", []string{"u1"}, ""))
 	if err != nil {
 		t.Fatalf("Get mv_users failed: %v", err)
 	}
@@ -208,7 +205,7 @@ func TestEngineMultipleViews(t *testing.T) {
 		t.Fatal("mv_users row not found")
 	}
 
-	entry2, err := kvb.Get(ctx, kv.PkKey("mv_orders", "ord1"))
+	entry2, err := kvb.Get(ctx, kv.BuildPkKey("mv_orders", []string{"ord1"}, ""))
 	if err != nil {
 		t.Fatalf("Get mv_orders failed: %v", err)
 	}
@@ -229,9 +226,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	// Subscribe to DLQ subject to verify malformed events arrive there
 	dlqSub, err := nc.SubscribeSync("natsql.dlq")
@@ -255,7 +250,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -323,9 +318,9 @@ func TestEngineMalformedEvent(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry, err := kvb.Get(ctx, kv.PkKey("malformed_test", "valid1"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("malformed_test", []string{"valid1"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.PkKey("malformed_test", "valid1"), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("malformed_test", []string{"valid1"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("valid event was not materialized after malformed event — engine may have stalled")
@@ -354,9 +349,7 @@ func TestEngineRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_RESTART"
 	createStream(t, ctx, js, streamName)
@@ -370,7 +363,7 @@ func TestEngineRestart(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -402,7 +395,7 @@ func TestEngineRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
-	entry, err := kvb.Get(ctx, kv.PkKey("restart_test", "first"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("restart_test", []string{"first"}, ""))
 	if err != nil {
 		t.Fatalf("Get 'first' after close failed: %v", err)
 	}
@@ -420,7 +413,7 @@ func TestEngineRestart(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify the engine still functions: existing data is readable
-	entry2, err := kvb.Get(ctx, kv.PkKey("restart_test", "first"))
+	entry2, err := kvb.Get(ctx, kv.BuildPkKey("restart_test", []string{"first"}, ""))
 	if err != nil {
 		t.Fatalf("Get 'first' after restart failed: %v", err)
 	}
@@ -439,9 +432,7 @@ func TestEngineDoubleStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_DBL"
 	createStream(t, ctx, js, streamName)
@@ -455,7 +446,7 @@ func TestEngineDoubleStart(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -473,7 +464,7 @@ func TestEngineDoubleStart(t *testing.T) {
 	// Second Start should fail
 	if err := eng.Start(ctx); err == nil {
 		t.Error("expected ErrAlreadyStarted on second Start, got nil")
-	} else if err != engine.ErrAlreadyStarted {
+	} else if !errors.Is(err, engine.ErrAlreadyStarted) {
 		t.Errorf("expected ErrAlreadyStarted, got %v", err)
 	}
 
@@ -503,7 +494,7 @@ func TestEngineCloseWithoutStart(t *testing.T) {
 
 	if err := eng.Close(); err == nil {
 		t.Error("expected ErrNotStarted on Close without Start, got nil")
-	} else if err != engine.ErrNotStarted {
+	} else if !errors.Is(err, engine.ErrNotStarted) {
 		t.Errorf("expected ErrNotStarted, got %v", err)
 	}
 }
@@ -602,9 +593,7 @@ func TestEngineStats(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_STATS"
 	createStream(t, ctx, js, streamName)
@@ -618,7 +607,7 @@ func TestEngineStats(t *testing.T) {
 				Columns: []natsqlpkg.ColumnConfig{
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -682,9 +671,7 @@ func TestEngineGoroutineLeak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_LEAK"
 	createStream(t, ctx, js, streamName)
@@ -699,7 +686,7 @@ func TestEngineGoroutineLeak(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -790,7 +777,7 @@ func setupTestView(t *testing.T, ctx context.Context, js jetstream.JetStream) je
 		if err != nil {
 			t.Fatalf("marshal row failed: %v", err)
 		}
-		key := kv.PkKey(schema.Name, row.pk)
+		key := kv.BuildPkKey(schema.Name, []string{row.pk}, "")
 		if _, err := kvb.Put(ctx, key, data); err != nil {
 			t.Fatalf("Put(%q) failed: %v", key, err)
 		}
@@ -804,9 +791,7 @@ func TestEngineQueryPKLookup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -828,8 +813,14 @@ func TestEngineQueryPKLookup(t *testing.T) {
 	if result.Results[0]["name"] != "Alice" {
 		t.Errorf("name = %v, want %q", result.Results[0]["name"], "Alice")
 	}
-	if result.Results[0]["age"] != float64(30) {
-		t.Errorf("age = %v, want 30", result.Results[0]["age"])
+	// age is decoded with UseNumber (D-07/D-08) for precision, so it surfaces
+	// as json.Number, not float64.
+	ageNum, ok := result.Results[0]["age"].(json.Number)
+	if !ok {
+		t.Fatalf("age type = %T, want json.Number", result.Results[0]["age"])
+	}
+	if ageNum.String() != "30" {
+		t.Errorf("age = %s, want 30", ageNum.String())
 	}
 }
 
@@ -839,9 +830,7 @@ func TestEngineQueryViewNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
 	if err != nil {
@@ -864,9 +853,7 @@ func TestEngineQueryInvalidSQL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
 	if err != nil {
@@ -888,9 +875,7 @@ func TestEngineQueryUnknownColumn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -914,9 +899,7 @@ func TestEngineQueryConcurrent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -926,7 +909,7 @@ func TestEngineQueryConcurrent(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -944,9 +927,7 @@ func TestEngineQueryBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	// Set up KV data directly (not via engine)
 	setupTestView(t, ctx, js)
@@ -976,9 +957,7 @@ func TestEngineQueryFullScan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -1006,9 +985,7 @@ func TestEngineQueryEmptyResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -1041,9 +1018,7 @@ func TestEngineFullLifecycleViaFacade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_FACADE_LIFECYCLE"
 	createStream(t, ctx, js, streamName)
@@ -1058,7 +1033,7 @@ func TestEngineFullLifecycleViaFacade(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "name", From: "name", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -1139,9 +1114,8 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
+	natsURL := nc.ConnectedUrl()
 
 	streamName := "TEST_GRACEFUL"
 	createStream(t, ctx, js, streamName)
@@ -1156,7 +1130,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 					{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true},
 					{Name: "data", From: "data", Type: natsqlpkg.ColumnTypeString},
 				},
-				Consumer: natsqlpkg.ConsumerConfig{BatchSize: 10, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsqlpkg.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
@@ -1175,7 +1149,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	}
 
 	// Publish several events
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		event := fmt.Sprintf(`{"id": "g%d", "data": "event-%d"}`, i, i)
 		if _, err := js.Publish(ctx, streamName+".events", []byte(event)); err != nil {
 			t.Fatalf("Publish event %d failed: %v", i, err)
@@ -1200,7 +1174,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 
 	// Verify data persistence after close via a separate NATS connection
 	// (the original connection was closed by eng.Close())
-	verifyNC, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
+	verifyNC, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("failed to create verification connection: %v", err)
 	}
@@ -1216,8 +1190,8 @@ func TestEngineGracefulShutdown(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	for i := 0; i < 5; i++ {
-		pk := kv.PkKey("graceful_test", fmt.Sprintf("g%d", i))
+	for i := range 5 {
+		pk := kv.BuildPkKey("graceful_test", []string{fmt.Sprintf("g%d", i)}, "")
 		entry, err := kvb.Get(ctx, pk)
 		if err != nil {
 			t.Fatalf("Get(%q) failed: %v", pk, err)
@@ -1234,9 +1208,7 @@ func TestEngineNCEdgeCases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_NC_EDGE"
 	createStream(t, ctx, js, streamName)
@@ -1273,9 +1245,7 @@ func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_NEW_ERR"
 	createStream(t, ctx, js, streamName)
@@ -1283,8 +1253,10 @@ func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
 	// Config with missing view name should fail validation
 	cfg := &natsqlpkg.Config{
 		Views: []natsqlpkg.ViewConfig{
-			{SourceStream: streamName, KeyFields: []string{"id"},
-				Columns: []natsqlpkg.ColumnConfig{{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true}}},
+			{
+				SourceStream: streamName, KeyFields: []string{"id"},
+				Columns: []natsqlpkg.ColumnConfig{{Name: "id", From: "id", Type: natsqlpkg.ColumnTypeString, PrimaryKey: true}},
+			},
 		},
 	}
 	_, err := engine.New(nc, js, cfg)
@@ -1297,36 +1269,9 @@ func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
 // Test helpers — start embedded NATS server and create JetStream streams
 // ---------------------------------------------------------------------------
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
+func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	opts := &server.Options{
-		Port:       -1,
-		JetStream:  true,
-		StoreDir:   t.TempDir(),
-		ServerName: "test-server",
-		NoLog:      true,
-		NoSigs:     true,
-	}
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("failed to start NATS server: %v", err)
-	}
-	srv.Start()
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready within 5 seconds")
-	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("failed to connect: %v", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("failed to create JetStream context: %v", err)
-	}
-	return srv, nc, js
+	return testutil.StartEmbeddedNATS(t)
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {

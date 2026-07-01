@@ -1,485 +1,245 @@
-# Feature Landscape: SQL-over-KV Materialized View Engines on NATS
+# Feature Landscape: Code Review Corrections for natsql v1.2
 
-**Domain:** Stream-to-KV materialized view engine
-**Researched:** 2026-05-23
-**Mode:** Ecosystem — Features dimension, five comparable systems analyzed
+**Project:** natsql — NATS-native materialized view engine
+**Researched:** 2026-05-31
+**Mode:** Feature corrections from code review findings
 
-## System-by-System Analysis
+## Overview
 
-### 1. ksqlDB (Kafka Streams → SQL)
-
-**How it works:** ksqlDB wraps Kafka Streams behind a SQL interface. `CREATE TABLE AS SELECT` defines a materialized view (backed by a Kafka Streams state store). Pull queries (`SELECT ... WHERE key=val`) serve the current state from the local RocksDB store. Push queries (`SELECT ... EMIT CHANGES`) subscribe to ongoing changes.
-
-**SQL Dialect:**
-- `CREATE STREAM` for event streams, `CREATE TABLE` for tables with primary keys
-- `CREATE TABLE AS SELECT` with aggregation (COUNT, SUM, AVG), windowing, GROUP BY, JOINs
-- Pull queries: `SELECT ... FROM table WHERE key=literal` — strict subset of ANSI SQL
-- Pull queries support equality on key, optionally range on non-key when table scans enabled, `LIMIT`
-- Push queries: `SELECT ... FROM stream EMIT CHANGES` — continuous subscription
-
-**Key Features:**
-- Dual pull/push query model (request-response for state, streaming for subscriptions)
-- Incremental updates via Kafka Streams (RocksDB state stores)
-- Schema Registry integration (Avro, Protobuf, JSON Schema)
-- Exactly-once semantics
-- REST API + CLI + Java client
-- Auto-scaling by adding ksqlDB nodes
-
-**Pain Points (to avoid):**
-- Deadlocks on concurrent pull queries (documented in their own docs)
-- Table scans can cause OOM on large state stores
-- `CREATE TABLE` (source) cannot be pull-queried — only `CREATE TABLE AS SELECT` tables are materialized
-- Complex deployment with Kafka, Schema Registry, connect cluster
-- RocksDB compaction can cause latency spikes during queries
-- No cross-data-center replication built in
-- Pull queries are key-lookup-only by default (table scans opt-in and slow)
-
-**Table Stakes:**
-- [ ] Declarative materialized view definition (CREATE TABLE AS SELECT)
-- [ ] Pull queries (request/response) on materialized state
-- [ ] Primary-key lookups
-- [ ] Range scans on secondary fields
-- [ ] Incremental, ordered consumption from stream source
-
-**Differentiators:**
-- Push queries / continuous subscriptions (EMIT CHANGES)
-- Rich aggregation (COUNT, SUM, AVG, MIN, MAX)
-- Multi-stream JOINs (stream-stream, stream-table, table-table)
-- Windowed aggregation (tumbling, hopping, session windows)
-- Schema Registry for type safety and evolution
-
-**Anti-Features:**
-- Full SQL DML (INSERT/UPDATE/DELETE) — ksqlDB is append-only; mutations go through Kafka
-- Transactional multi-key writes
-- Interactive query routing (handled transparently; user doesn't locate shards)
+This document maps the 25 code review findings to the feature behaviors they correct. Rather than introducing new user-facing features, these corrections fix bugs and behavioral issues in existing features. The "feature" here is **correctness** — each fix makes an existing feature work as documented.
 
 ---
 
-### 2. rqlite (SQLite + Raft)
+## Critical Correctness Features
 
-**How it works:** rqlite sits a Raft consensus layer on top of SQLite. Every node has a full copy of the SQLite database. Writes go through the Raft log; reads can be served locally (weak) or through the leader (strong/linearizable). HTTP API for all operations.
+### CORR-01: Ordered Stream Materialization (CR-01)
 
-**Query Routing:**
-- Default: Follower transparently forwards reads/writes to Leader (weak consistency)
-- `level=none`: reads from local SQLite (fast, potentially stale)
-- `level=linearizable`: heartbeat quorum check before local read
-- `level=strong`: read goes through Raft log (slow, don't use in prod)
-- `redirect`: returns HTTP 301 with Leader address instead of proxying
-- Read-only nodes: full SQLite copy, never participate in Raft; serve `none` reads
+**What the feature should do:** Events from a JetStream source stream are materialized to KV in stream order. Two events for the same primary key are applied in the order they were published.
 
-**SQL Subset:**
-- Full SQLite SQL (FTS5, JSON1, RTREE, STRICT tables)
-- No special SQL syntax for cluster awareness
-- `PRAGMA` directives supported (except journal_mode, wal_checkpoint, synchronous)
-- Parameterized statements (positional and named) via HTTP JSON API
-- Multi-statement transactions via `?transaction` URL param
-- No materialized views, no views at all — plain SQLite tables
-- CDC via streaming the Raft log to external systems
+**What was wrong:** The 16-goroutine worker pool could process events out of order. Event A (PK=x, set name=Alice) published before Event B (PK=x, set name=Bob) could be applied after Event B, leaving the KV state as Alice instead of Bob.
 
-**Key Features:**
-- Drop-in SQLite replacement for HA
-- Hot backups, automatic cluster formation (DNS, Consul, etcd, K8s)
-- TLS + RBAC
-- Queued writes for throughput
-- Associative response format (map per row)
-- Blob support (base64, byte array)
+**Fix:** Remove the worker pool. Process messages sequentially in the bridge goroutine.
 
-**Limits:**
-- All writes go through single Leader (Raft bottleneck)
-- No sharding — every node has full data copy
-- No materialized views (everything is a table)
-- No push queries / subscriptions (poll-based only)
-- Storage = disk (SQLite file), not KV store
-- Horizontal scaling for writes is effectively not possible
-- Memory proportional to working set (SQLite page cache)
+**Verification:** Integration test: publish 100 rapid updates to the same PK, each setting a monotonically increasing counter. Assert final counter value in KV equals 100.
 
-**Table Stakes:**
-- HTTP API for reads/writes
-- Cluster-level read consistency options
-- SQL compatibility (standard SQL matters)
+### CORR-02: Consistent PK Encoding (CR-02)
 
-**Anti-Features:**
-- Materialized views with incremental update — rqlite doesn't offer this
-- Push-based subscriptions — not in the product
-- Sharding or partitioning — deliberately avoided
+**What the feature should do:** A row materialized with PK value `a_b` should be queryable via `WHERE pk = 'a_b'`. The KV key used for storage and lookup must be identical.
+
+**What was wrong:** Write path sanitized PK twice (mapper + writer). Read path sanitized PK once (executor only). Rows with `_`, `|`, `/`, `*`, `>` in PK values were stored under a different key than queries looked up.
+
+**Fix:** Single `BuildPkKey()` function called once on both paths.
+
+**Verification:** Black-box tests for PK values containing `_`, `|`, `/`, `*`, `>`, and custom separators. Materialize row → query by PK → assert found.
+
+### CORR-03: Correct Predicate Semantics (CR-03)
+
+**What the feature should do:** SQL WHERE conditions must be evaluated according to standard SQL semantics. Contradictory predicates (`id = 'u1' AND id != 'u1'`) must return zero rows.
+
+**What was wrong:** PK equality conditions were removed from post-filtering. `WHERE id = 'u1' AND id != 'u1'` used PK lookup for `u1` but never applied the `id != 'u1'` filter, returning the row.
+
+**Fix:** Keep ALL original conditions as post-filters. Add contradiction detection for short-circuit optimization.
+
+**Verification:** Unit tests for planner: contradictory PK equalities return empty plan. Integration tests for executor: contradictory predicates return zero rows.
 
 ---
 
-### 3. Badger / Dgraph
+## High-Severity Corrections
 
-**How it works:** Dgraph is a distributed graph database built on Badger (a Go embeddable KV store). It uses a custom GraphQL+- / DQL dialect for queries. The mapping from KV to query is: predicates stored as KV pairs, filtered through indexing (reverse, full-text, geo, etc.), and joined via query planning.
+### CORR-04: SELECT * Excludes Metadata (CR-04)
 
-**DQL (Dgraph Query Language):**
-- Not SQL — custom GraphQL-influenced syntax
-- `{ q(func: eq(name, "Alice")) { uid name age } }` — root function + filters
-- Root functions: `eq`, `allofterms`, `anyofterms`, `regexp`, `ge`, `le`, etc.
-- Facets: key-value metadata on edges
-- Reversal: `~predicate` to traverse reverse edges
-- Variables and query blocks for joins
-- No STANDARD SQL (intentional — graph queries need different syntax)
+**What the feature should do:** `SELECT *` returns only the user-defined schema columns. Internal `_meta` fields are not exposed.
 
-**KV Layer (Badger):**
-- LSM-tree with WAL, compression, bloom filters
-- Transactions (SSI isolation)
-- Streaming backups
-- Managed memory (no manual GC in Go)
-- Direct Go API (can embed)
+**What was wrong:** `projectRow` returned the full stored map for `SELECT *`, including `_meta` with `stream_seq` and `updated_at`.
 
-**Key Features:**
-- Graph traversal as first-class query primitive
-- Full-text, geo, and regex indexing
-- Distributed query execution (any node can serve)
-- Hot-data is memory-mapped; cold data on disk
-- Go embeddable as a library
+**Fix:** Pass schema column names into plans. `SELECT *` projects only those columns.
 
-**Pain Points:**
-- Not SQL — steep learning curve for SQL users
-- Query planning can be unpredictable
-- JOINs are graph traversals (different mental model)
-- No streaming/changelog input — batch load or mutation API
-- Dgraph as a project had multiple commercial/community shifts (Dgraph Labs → Dgraph)
+**Verification:** Black-box test asserting `_meta` is not present in `SELECT *` results.
 
-**Relevance to natsql:**
-- Badger's KV → query layer mapping shows it's feasible to build fast point-lookups and range scans on LSM KV stores
-- Dgraph's indexing approach (reverse indexes per predicate) is analogous to what natsql needs for secondary indexes
-- The complexity and non-standard query language is a caution: don't invent your own query language
+### CORR-05: Unsupported SQL Rejection (CR-05)
 
-**Anti-Features:**
-- Proprietary query language — don't do this; natsql uses SQL
-- Graph traversal as primary query primitive — wrong abstraction for KV
-- Complex distributed query planning — stay single-node for v1
+**What the feature should do:** Queries with unsupported clauses (ORDER BY, GROUP BY, DISTINCT, HAVING, aggregations, subqueries) should return a clear error message.
 
----
+**What was wrong:** Non-column SELECT expressions were silently ignored. ORDER BY, GROUP BY, etc. were parsed but never validated.
 
-### 4. Materialize (Timely + Differential Dataflow)
+**Fix:** Explicitly check and reject unsupported clauses in `Parse()`.
 
-**How it works:** Materialize ingests streaming data (Kafka, PostgreSQL CDC, MySQL CDC, webhooks) and maintains materialized views using Timely/Differential Dataflow. Results are incrementally updated and persisted in durable storage. Queries use standard PostgreSQL-compatible SQL.
+**Verification:** Negative test for each unsupported construct: `SELECT COUNT(*)`, `SELECT DISTINCT`, `ORDER BY`, `GROUP BY`, `HAVING`.
 
-**Materialized View Model:**
-- `CREATE MATERIALIZED VIEW AS SELECT ...` — standard SQL syntax
-- Incrementally updated (not batch-refreshed)
-- Results persisted in durable storage (can survive cluster restart)
-- Cross-cluster queryable (compute cluster maintains, serving clusters index)
-- Supports indexes on materialized views for in-memory speed
-- `CREATE VIEW` + `CREATE INDEX` = in-memory incremental (cheaper alternative)
-- `REPLACEMENT MATERIALIZED VIEW` — zero-downtime view definition updates
-- `REFRESH` strategies: `ON COMMIT` (default), `AT` (specific time), `EVERY` (cron-like schedule)
+### CORR-06: HTTP Port Respects Config (CR-06)
 
-**SQL Subset:**
-- Full SQL-92 + PostgreSQL compatibility
-- Joins: all types (inner, left, right, full, cross, lateral)
-- Aggregations: GROUP BY, COUNT, SUM, AVG, MIN, MAX, stddev, etc.
-- Window functions (with limitations for streaming)
-- Temporal filters (`mz_now()` for temporal windows)
-- Subqueries, CTEs (including recursive CTEs)
-- `SUBSCRIBE` — push-based subscription to view changes
-- CDC sources (PostgreSQL, MySQL, MongoDB, SQL Server)
-- Kafka/Redpanda sources, webhooks, load generators
+**What the feature should do:** The standalone server's HTTP port should match the configured value in `http.port` or `--port`.
 
-**Key Features:**
-- Strict serializable isolation by default
-- PostgreSQL wire protocol — compatible with any Postgres tool (dbt, Tableau, Metabase)
-- Multi-cluster architecture (source, transform, serving)
-- Sinks (Kafka, S3, Iceberg, Snowflake)
-- `EXPLAIN PLAN` / `EXPLAIN FILTER PUSHDOWN` for optimization
-- `PARTITION BY` for internal data partitioning
-- History retention for durable subscriptions (private preview)
+**What was wrong:** CLI logged `cfg.HTTP.Port` but engine hardcoded port 8080.
 
-**Pain Points (to avoid):**
-- `CREATE MATERIALIZED VIEW` is expensive (persists to durable storage) — prefer `CREATE VIEW` + `CREATE INDEX` for single-cluster setups
-- Hydration time after restart can be long (reading from durable storage)
-- Memory proportional to working set in compute cluster
-- Not all PostgreSQL features supported (e.g., UPDATABLE views)
-- Complex deployments need 3-tier architecture (source/transform/serve)
-- Requires dedicated infrastructure (Kubernetes for self-managed)
-- Community Edition limited to 24 GiB memory, 48 GiB disk
+**Fix:** Initialize `queryPort` from `cfg.HTTP.Port` in engine constructors.
 
-**Relevance to natsql:**
-- PostgreSQL wire protocol is table stakes for broad tool compatibility — but natsql v1 explicitly defers this
-- Incremental materialized views on streaming data is exactly what natsql does, but at different scale/complexity
-- The `CREATE VIEW` + index pattern vs `CREATE MATERIALIZED VIEW` — natsql's KV-backed approach is naturally the "indexed view" pattern (KV bucket IS the materialized state)
-- `SUBSCRIBE` pattern is the "push query" analogue — natsql could add this post-v1
+**Verification:** CLI-level test starting server with non-default port and verifying HTTP server binds there.
 
-**Table Stakes:**
-- Standard SQL (PostgreSQL dialect is the dominant expectation)
-- Incremental view maintenance (not batch recalculation)
-- Durable, restart-safe materialized state
-- Query-anywhere from any cluster node
+### CORR-07: Startup Error Propagation (CR-07)
 
-**Differentiators:**
-- Full JOIN support (multi-way, non-windowed)
-- Complex aggregations (GROUP BY with multiple functions)
-- PostgreSQL wire protocol (massive tool ecosystem)
-- Strict serializable isolation
-- Sinks to external systems
+**What the feature should do:** `Engine.Start()` must return an error if any core service (HTTP listener, materializer consumer setup, NATS handler) fails to start.
 
-**Anti-Features:**
-- Materialize REQUIRES significant infrastructure (3 clusters, K8s, etc.) — overkill for many use cases
-- Hydration latency from durable storage — natsql's KV buckets are faster to read but slower to write
-- Multi-tier architecture is unnecessary complexity for simple stream→KV use cases
+**What was wrong:** Materializer errors were only logged inside goroutines. HTTP listen errors happened after `Serve` in goroutine. `Start()` returned nil even with failures.
 
----
+**Fix:** Bind HTTP listener synchronously. Propagate materializer consumer setup errors. Log NATS handler failure prominently but don't block.
 
-### 5. Kafka Streams Interactive Queries
+**Verification:** Integration test: start engine with port conflict → expect `Start()` error.
 
-**How it works:** Kafka Streams applications maintain state stores (RocksDB embedded, or in-memory) keyed by record keys. Interactive Queries exposes these state stores via a local API: `ReadOnlyKeyValueStore.get(key)`, `range(from, to)`, `all()`. Stores can be partitioned across instances. A `StreamsMetadata` API discovers which instance hosts which partition.
+### CORR-08: Config Cross-Validation (CR-08)
 
-**API Patterns:**
-```java
-// Local state store access
-ReadOnlyKeyValueStore<String, Long> store = 
-    streams.store(StoreQueryParameters.fromNameAndType("counts", QueryableStoreTypes.keyValueStore()));
-Long count = store.get("my-key");
+**What the feature should do:** Config validation must verify that `key_fields` references only `primary_key` columns, and all `primary_key` columns appear in `key_fields`.
 
-// Range scan
-KeyValueIterator<String, Long> range = store.range("a", "z");
+**What was wrong:** Validation checked `key_fields` non-empty and `primary_key` exists, but never cross-referenced them. Invalid configs could start and send every event to DLQ.
 
-// Partition metadata (for distributed queries)
-Collection<StreamsMetadata> metadata = streams.allMetadataForStore("counts");
-// StreamsMetadata has host(), port(), partitionCount(), etc.
+**Fix:** Add cross-validation logic in `Config.Validate()`.
 
-// Custom state stores (supported but rare)
-StoreBuilder<KeyValueStore<String, Long>> storeBuilder =
-    Stores.keyValueStoreBuilder(Stores.persistentKeyValueStore("my-store"), 
-        Serdes.String(), Serdes.Long());
-```
+**Verification:** Unit tests for each invalid config: key_field not a column, key_field references non-PK column, PK column not in key_fields, duplicate column names.
 
-**Key Features:**
-- `get(key)` — O(1) point lookup
-- `range(from, to)` — ordered range scan
-- `all()` — full table scan (use with caution)
-- `approximateNumEntries()` — approximate cardinality
-- Custom state store types: key-value, windowed, session, timestamped
-- Custom serdes for any data format
-- Co-located computation + query (no network hop for local data)
-- gRPC/REST layer often built on top by application developers
+### CORR-09: Precise Number Handling (CR-09)
 
-**Pain Points:**
-- No built-in query language — you must write Java code or build an API layer
-- No ad-hoc SQL queries — all queries are programmatic
-- Partition discovery requires custom infrastructure (routing layer)
-- RocksDB compaction can block queries (observed latency spikes)
-- No secondary indexes — only primary-key access patterns
-- State store size limited by local disk (partition count * data per key)
-- Rebalancing can make state temporarily unavailable
-- Cross-partition queries require custom fan-out
-- No easy CLI debugging — must inspect RocksDB SST files or expose an API
+**What the feature should do:** Large integer values (>2^53) must preserve exact precision during query execution.
 
-**Relevance to natsql:**
-- The `get(key)` + `range(from, to)` pattern IS the query interface natsql needs for v1
-- natsql wraps this in SQL, eliminating the need for Java code
-- NATS KV buckets already provide this same `get/range` interface — no RocksDB needed
-- The pain of writing custom routing/API layers is exactly what natsql solves
-- The lack of secondary indexes in Kafka Streams is the #1 reason natsql needs them
+**What was wrong:** Executor used `json.Unmarshal` which converts all numbers to `float64`, losing precision above 2^53. Mapper used `json.Decoder.UseNumber()` and stored `json.Number`.
 
-**Table Stakes:**
-- Primary-key point lookups (get by key)
-- Range scans over sorted keys
+**Fix:** Use `json.Decoder.UseNumber()` in executor too. Update `valuesEqual` to compare `json.Number` exactly.
 
-**Differentiators:**
-- Co-located compute + query (no extra network hop)
-- Partition-aware routing (query reaches the right instance)
+**Verification:** Tests for values like `9007199254740993` (2^53+1) in both write and query paths.
 
-**Anti-Features:**
-- Don't expose raw RocksDB/state store primitives — wrap in SQL
-- Don't require custom code to query — declarative SQL or API call
-- Don't force users to manage partition routing — abstract behind NATS request-reply or HTTP
+### CORR-10: Transient Error Handling (CR-10)
+
+**What the feature should do:** Transient KV write failures (network timeout, NATS cluster unavailable) should NAK the message for redelivery, not send it to DLQ. Only terminal errors should go to DLQ.
+
+**What was wrong:** All writer errors were treated equally — DLQ + Ack. A temporary NATS outage permanently dropped valid events.
+
+**Fix:** Classify errors. Transient → NAK with backoff. Terminal → DLQ + Ack.
+
+**Verification:** Unit test for `isTransientError()` classification. Integration test: simulate KV failure, assert NAK not DLQ.
+
+### CORR-11: Durable Consumer Persistence (CR-11)
+
+**What the feature should do:** Durable consumers persist until explicitly deleted, surviving extended engine downtime.
+
+**What was wrong:** `InactiveThreshold: 1h` caused NATS to delete durable consumers after one hour of inactivity. Restart after >1h replayed entire stream.
+
+**Fix:** Remove `InactiveThreshold` from consumer config.
+
+**Verification:** Integration test: create consumer, stop engine for >1h (or simulate), restart, verify consumer resumes from last ack.
+
+### CORR-12: Accurate Config Naming (CR-12)
+
+**What the feature should do:** Config field names accurately reflect their runtime behavior.
+
+**What was wrong:** `batch_size` only influenced `MaxAckPending` and did not control fetch batch size.
+
+**Fix:** Rename to `max_ack_pending`.
+
+**Verification:** Unit tests assert config mapping produces correct `MaxAckPending` value.
+
+### CORR-13: Scoped Full Scans (CR-13)
+
+**What the feature should do:** A full scan on one view should not pay the cost of scanning keys from other views.
+
+**What was wrong:** `WatchAll` scanned the entire shared bucket, filtering by prefix client-side. Cross-view cost was unbounded.
+
+**Fix:** Add view prefix constant and document cross-view cost. Implement server-side filtering where NATS API supports it.
+
+**Verification:** Benchmark with multiple large views. Document performance characteristics.
+
+### CORR-14: Safe Stream Creation (CR-14)
+
+**What the feature should do:** Stream creation should respect `source_subject` and not mutate external streams.
+
+**What was wrong:** CLI created streams with `${source_stream}.>` regardless of `source_subject`. External streams were silently mutated.
+
+**Fix:** Only auto-create streams in embedded mode. Respect `source_subject`. Add `--create-streams` flag for opt-in.
+
+**Verification:** CLI test: verify stream creation uses configured subject. Verify external streams are not modified.
 
 ---
 
-## Cross-System Feature Matrix
+## Medium/Low Corrections
 
-### Feature: Declarative view definition
-
-| System | Approach | Notes |
-|--------|----------|-------|
-| ksqlDB | `CREATE TABLE AS SELECT` | SQL DDL, rich semantics |
-| rqlite | N/A | No materialized views — plain SQL tables |
-| Dgraph | Schema definitions in DQL | Custom format, not standard SQL |
-| Materialize | `CREATE MATERIALIZED VIEW AS SELECT` | SQL DDL, closest to rqlite |
-| Kafka Streams | `KStream.toTable()`, Processor API | Programmatic, no SQL |
-| **natsql v1** | YAML/JSON config | Explicitly NOT SQL DDL for v1 — simpler |
-
-### Feature: Query interface
-
-| System | Pull (Request/Response) | Push (Subscription) | Protocol |
-|--------|------------------------|---------------------|----------|
-| ksqlDB | `SELECT ... WHERE key=val` (Pull) | `SELECT ... EMIT CHANGES` (Push) | REST, WebSocket, CLI |
-| rqlite | `SELECT` via HTTP GET/POST | No | HTTP/JSON |
-| Dgraph | DQL via gRPC/HTTP | Subscriptions via DQL | gRPC, HTTP |
-| Materialize | `SELECT` via pgwire | `SUBSCRIBE` | PostgreSQL wire |
-| Kafka Streams | `store.get(key)` / `store.range()` | Custom (KStream.forEach, etc.) | Java API |
-| **natsql v1** | `SELECT ... WHERE col=val` | No — deferred | NATS request-reply, HTTP |
-
-### Feature: Index support
-
-| System | PK Index | Secondary Index | Composite Index | Full-text |
-|--------|----------|-----------------|-----------------|-----------|
-| ksqlDB | Automatic (key) | Table scan only (non-key) | No | No |
-| rqlite | SQLite indexes | SQLite indexes | SQLite | SQLite FTS5 |
-| Dgraph | Automatic (UID) | Per-predicate | Reverse indexes | Yes |
-| Materialize | Via `CREATE INDEX` | Via `CREATE INDEX` | Multi-column index | No |
-| Kafka Streams | Automatic (key) | No | No | No |
-| **natsql v1** | Automatic (KV key) | Single-column equality + range | No | No |
-
-### Feature: Aggregation support
-
-| System | COUNT | SUM | AVG | GROUP BY | Windowed |
-|--------|-------|-----|-----|----------|----------|
-| ksqlDB | Yes | Yes | Yes | Yes | Yes (tumbling, hopping, session) |
-| rqlite | Yes | Yes | Yes | Yes | SQLite date functions |
-| Dgraph | Count (graph-level) | No | No | No | No |
-| Materialize | Yes | Yes | Yes | Yes | Yes + temporal filters |
-| Kafka Streams | Yes | Yes | Yes | Yes | Yes (all window types) |
-| **natsql v1** | No | No | No | No | No — explicitly deferred |
-
-### Feature: JOIN support
-
-| System | Stream-Stream | Stream-Table | Table-Table | Multi-way |
-|--------|--------------|-------------|-------------|-----------|
-| ksqlDB | Yes | Yes | Yes | Yes |
-| rqlite | N/A | N/A | SQLite JOINs | Yes |
-| Dgraph | N/A | N/A | Graph traversal | Graph traversal |
-| Materialize | Yes (via sources) | Yes | Yes | Yes |
-| Kafka Streams | Yes | Yes | Yes | Yes |
-| **natsql v1** | No | No | No | No — explicitly deferred |
-
-### Feature: Operational characteristics
-
-| System | HA | Persistence | Latency | Throughput | Tooling |
-|--------|----|-------------|---------|------------|---------|
-| ksqlDB | Multi-node | RocksDB (disk) | Pull: low | Stream: high | REST, CLI, Java |
-| rqlite | Raft | SQLite (disk) | Read: low | Write: medium | HTTP, CLI, libs |
-| Dgraph | Raft + sharding | Badger (disk) | Query: medium | High | GraphQL, gRPC |
-| Materialize | Multi-cluster | Durable storage | Query: low | Stream: high | pgwire, dbt, BI tools |
-| Kafka Streams | Partitioned | RocksDB (disk) | Query: low | High | JMX, Java |
-| **natsql v1** | NATS cluster | KV bucket (NATS) | Query: low | JetStream-bound | NATS req-reply, HTTP |
+| Fix | Feature Behavior | Verification |
+|-----|-----------------|--------------|
+| CR-15: `$.field` prefix support | Field paths with or without `$.` prefix work consistently | Test both `$.user.id` and `user.id` |
+| CR-16: Index config rejection | Config with indexes returns clear error at load time | Test: config with indexes → validation error |
+| CR-17: Delete semantics | Documented as deferred; no behavioral change | Documentation review |
+| CR-18: HTTP JSON handling | Trailing data rejected; `MaxBytesError` use `errors.As` | Test large body, test trailing comma |
+| CR-19: NATS handler errors | Flush and Respond errors checked and logged | Test with mocked NATS connection |
+| CR-20: Error message typo | "unmarshaling row" instead of "marshaling row" | Code review |
+| CR-21: Example errors | All example errors checked; connection ownership explicit | Manual review |
+| CR-22: Dead code removal | Unused symbols removed from codebase | `go vet`, build check |
+| CR-23: gofmt formatting | All files pass gofmt | CI check |
+| CR-24: Test helper dedup | Shared test utilities extracted | Code review |
+| CR-25: Docs sync | README and docs match implemented behavior | Documentation review |
 
 ---
 
-## Categorized Recommendations for natsql
-
-### Table Stakes (Must Have or Users Leave)
-
-These are non-negotiable features users expect from any state-queryable streaming system:
-
-| Feature | Complexity | Notes | Required by |
-|---------|------------|-------|-------------|
-| Declarative view definition (config) | Low | YAML/JSON v1; SQL DDL v2 | All comparable systems |
-| Ordered, durable stream consumption | Medium | JetStream consumer with resume | ksqlDB, Kafka Streams, Materialize |
-| Primary-key point lookup (`WHERE pk = val`) | Low | NATS KV `Get()` → SQL wrapper | All |
-| Range scan on primary key (`WHERE pk > val`) | Low | NATS KV `Keys()` with prefix/range | ksqlDB (opt-in), Kafka Streams, Badger |
-| Single-column equality on non-key field | Medium | Requires secondary index | ksqlDB (table scan), Dgraph, Materialize |
-| Single-column range on non-key field | Medium | Requires index on that column | Dgraph, Materialize (indexed) |
-| `LIMIT` support | Low | Trivial on sorted KV iteration | ksqlDB, SQL everywhere |
-| Crash recovery (durable consumer + state) | Medium | JetStream durable consumer + KV bucket | ksqlDB, Kafka Streams, Materialize |
-| Request-reply query interface | Low | NATS request-reply | Kafka Streams (custom API), ksqlDB (REST) |
-| HTTP/JSON query interface | Low | HTTP server wrapping SQL parser | rqlite, ksqlDB, Dgraph |
-| Malformed event handling (log + skip) | Low | Don't crash on bad data | All production systems |
-| Secondary index definition in config | Medium | YAML specifying indexed columns | Dgraph (schema), Materialize (`CREATE INDEX`) |
-
-### Differentiators (Competitive Advantage)
-
-These set natsql apart from alternatives and justify its existence:
-
-| Feature | Complexity | Why Differentiating | Comparable |
-|---------|------------|--------------------|------------|
-| **Zero-infrastructure Kafka alternative** | System | No Kafka, no Postgres, no Schema Registry — just NATS | Everyone else requires Kafka/K8s |
-| **Secondary indexes on KV state stores** | High | ksqlDB/Kafka Streams don't support this; Materialize does but with complexity | Materialize, Dgraph |
-| **Go embeddable (library mode)** | Medium | Run query engine inside your Go process — no sidecar | Badger (KV only), not ksqlDB/Mat |
-| **Minimal SQL that works out of box** | Low | Not full SQL-92 — SELECT + WHERE + LIMIT is enough for 90% of KV queries | Kafka Streams (no SQL), rqlite (full SQLite) |
-| **NATS-native request-reply** | Low | Query via `nc.Request("natsql.query", sqlBytes)` — fits NATS ecosystem | ksqlDB REST, not NATS-native |
-| **Declarative YAML/JSON config** | Low | No DDL parser for v1 — define view in a file | All others require SQL DDL |
-| **Independent from Confluent/Kafka ecosystem** | System | Single dependency: NATS | Everyone depends on Kafka |
-| **Embedded NATS support** | Low | Works with nats-server in-process | ksqlDB needs external Kafka |
-
-### Anti-Features (Deliberately NOT Build for v1)
-
-These are features the PROJET.md already defers OR that the systems research suggests are traps for a v1 product:
-
-| Anti-Feature | Why Avoid | What Comparable System Tried |
-|--------------|-----------|------------------------------|
-| **Full pgwire / PostgreSQL protocol** | Massive surface area; many edge cases; v1 should prove the query engine first | Materialize does this well but it took them years |
-| **DML via SQL (INSERT/UPDATE/DELETE)** | Blurs the write path; writes should flow through JetStream | ksqlDB doesn't support it; rqlite does but it's a different product |
-| **JOINs across views/tables** | Query planning complexity; needs multi-KV-bucket coordination | Every system supports it but it's complex |
-| **Aggregations (COUNT, SUM, GROUP BY)** | Needs state tracking across events; window management | ksqlDB/Mat do it well but it requires differential dataflow style |
-| **Window functions / CTEs / subqueries** | Significant SQL parser complexity | Materialize supports, Kafka Streams doesn't |
-| **Automatic schema inference** | Event format changes break queries; better to require explicit schema | ksqlDB/Mat use Schema Registry; natsql doesn't have one |
-| **Transaction support across rows** | CAS-based KV doesn't support multi-key transactions | rqlite (Raft) does; natsql (NATS KV) can't |
-| **Sharding / distributed query execution** | v1 should prove single-node correctness first | Dgraph and Kafka Streams do this but it's complex |
-| **Custom RocksDB or LSM storage** | NATS KV is the storage layer; adding a second storage is scope creep | ksqlDB (RocksDB), Badger (LSM) — but NATS KV exists already |
-| **Push queries / subscriptions** | Adds server-side complexity for maintaining query results over time | ksqlDB (`EMIT CHANGES`), Materialize (`SUBSCRIBE`) — defer |
-| **Own query language** | Bad for adoption; stick to standard SQL subset | Dgraph got this wrong — hurts adoption |
-| **Multi-stream Kafka-like input** | v1 = single stream per view. Multiple streams = complex ordering | ksqlDB supports multiple Kafka topics per stream |
-
-### Feature Dependencies
+## Feature Dependency Map
 
 ```
-View Config (YAML/JSON) 
-  → JetStream Consumer 
-    → Event deserialization + column mapping 
-      → KV bucket write (key = pk, value = column family or encoded row)
-        → Secondary index updates (write-through or async)
-          → Query engine (SQL parse → index lookup → KV read → result)
+CR-02 (Canonical PK) ──required_by──> CR-01 (Ordered processing)
+                                     └──> CR-03 (Predicate handling)
+                                     └──> CR-09 (Number precision in query)
+                                     
+CR-08 (Config validation) ──independent──> All other fixes (CI gate)
 
-Minimal viable chain: 
-  Config → Consumer → KV write → SQL parse → PK lookup → result
-  (secondary indexes optional for v1 MVP, essential for v1 GA)
+CR-01 (Ordered processing) ──independent──> CR-10 (Error classification)
+                                           └──> CR-11 (Consumer durability)
+                                           └──> CR-12 (Config naming)
+
+CR-03 (Predicates) ──uses──> CR-09 (Number comparison in valuesEqual)
+                   └──> CR-04 (projectRow signature)
+
+CR-07 (Startup errors) ──uses──> CR-06 (HTTP port plumbing)
 ```
 
-### Phase Dependencies
+---
 
-```
-Phase 1: Core pipeline
-  Declarative view config → JetStream consumer → KV materialization
-  → SQL equality on PK → LIMIT → request-reply + HTTP
+## MVP Definition for v1.2
 
-Phase 2: Secondary indexes
-  Index config → index maintenance on materialization → WHERE on non-key columns → range scans
+### Must Fix (Critical — Data Correctness)
 
-Phase 3: Operational hardening  
-  Crash recovery → graceful shutdown → metrics → malformed event handling
+1. **CR-01**: Ordered stream processing (data corruption without this)
+2. **CR-02**: Consistent PK encoding (data unreachable without this)
+3. **CR-03**: Correct predicate semantics (wrong query results without this)
 
-Phase 4: Embed mode 
-  Go library API → in-process NATS → docs + examples
+### Must Fix (High — User-Visible Behavior)
 
-Phase 5: Enhanced queries (post-v1)
-  Aggregation → JOINs → push queries → pgwire
-```
+4. **CR-04**: SELECT * filters metadata (internal fields leaked)
+5. **CR-05**: Unsupported SQL rejection (silent wrong results)
+6. **CR-07**: Startup error propagation (engine says "started" when it isn't)
+7. **CR-09**: Number precision (data corruption for large integers)
+8. **CR-10**: Transient error handling (data loss on temporary outage)
+9. **CR-14**: Safe stream creation (external stream mutation)
 
-### MVP Recommendation for Feature Parity
+### Should Fix (High/Medium — Operational Correctness)
 
-**Must ship (table stakes for being useful):**
-1. YAML/JSON view config with stream name, key column, column mapping
-2. JetStream durable consumer with ordered delivery
-3. KV bucket materialization (key = primary key, value = encoded row)
-4. `SELECT ... WHERE pk = val` (point lookup)
-5. `SELECT ... WHERE pk > val AND pk < val` (range on PK)
-6. `LIMIT N`
-7. NATS request-reply + HTTP query endpoints
-8. Crash recovery (durable consumer resumes; KV state persists)
-9. Malformed event handling (log + skip, don't crash)
+10. **CR-06**: HTTP port from config (config ignored)
+11. **CR-08**: Config cross-validation (invalid configs not caught)
+12. **CR-11**: Durable consumer persistence (replay after 1h downtime)
+13. **CR-12**: Accurate config naming
+14. **CR-13**: Scoped full scans (cross-view cost)
+15. **CR-18**: HTTP body handling (fragile error detection)
+16. **CR-19**: NATS handler errors (ignored errors)
 
-**Ship next (differentiators for v1):**
-10. Secondary indexes (single-column equality + range)
-11. Go embeddable library mode
-12. Basic WHERE clause with AND (multiple conditions)
+### Polish (Low — Code Quality)
 
-**Defer:**
-- JOINs (needs query planner across buckets)
-- Aggregations (needs state machine per group)
-- Push queries (needs subscription model on query results)
-- pgwire protocol (needs PostgreSQL protocol parser)
-- Schema inference (needs Schema Registry equivalent)
-- Multi-view transactions (not possible with NATS KV CAS semantics)
+17. CR-15: `$.field` prefix support
+18. CR-16: Index config rejection
+19. CR-20: Error message typo
+20. CR-21: Example error checking
+21. CR-22: Dead code removal
+22. CR-23: gofmt formatting
+23. CR-24: Test helper deduplication
+24. CR-25: Documentation sync
 
-## Sources
+### Deferred
 
-- ksqlDB documentation: https://docs.ksqldb.io/en/latest/developer-guide/ksqldb-reference/select-pull-query/
-- rqlite documentation: https://rqlite.io/docs/features/, https://rqlite.io/docs/api/api/, https://rqlite.io/docs/api/read-consistency/
-- Materialize documentation: https://materialize.com/docs/sql/create-materialized-view/, https://materialize.com/docs/concepts/views/, https://materialize.com/docs/get-started/
-- Kafka Streams documentation: https://docs.confluent.io/platform/current/streams/developer-guide/interactive-queries.html
-- Dgraph documentation: https://dgraph.io/docs/ (archived docs used for pattern reference)
-- natsql PROJECT.md: /home/pawel/repo/natsdb/.planning/PROJECT.md
+- **CR-17**: Delete/tombstone semantics (needs design, not a bug fix)
 
-**Confidence:** MEDIUM-HIGH — All feature claims verified against official documentation except Dgraph (site returned 404 for specific DQL pages; Dgraph patterns come from archived knowledge). Kafka Streams Interactive Queries documentation was partially fetched; API patterns confirmed from public API documentation.
+---
+
+*Feature research for: natsql v1.2 Code Review Corrections*
+*Researched: 2026-05-31*

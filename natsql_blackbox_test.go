@@ -16,16 +16,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"io"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	natsql "github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 // testRow is a row in the materialized view, keyed by user_id.
@@ -82,26 +82,6 @@ var allTestRows = []testRow{
 // Helpers
 // ---------------------------------------------------------------------------
 
-// rowMapByPK returns the test rows indexed by user_id for quick lookup.
-func rowMapByPK() map[string]testRow {
-	m := make(map[string]testRow, len(allTestRows))
-	for _, r := range allTestRows {
-		m[r.UserID] = r
-	}
-	return m
-}
-
-// filterRows returns rows matching a predicate.
-func filterRows(rows []testRow, fn func(testRow) bool) []testRow {
-	var out []testRow
-	for _, r := range rows {
-		if fn(r) {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 // requireResultCount asserts the query returns exactly n rows.
 // Returns the results for further assertions.
 func requireResultCount(t *testing.T, res *natsql.QueryResult, label string, want int) []map[string]any {
@@ -149,9 +129,7 @@ func TestBlackBox_Queries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_BLACKBOX"
 	createStream(t, ctx, js, streamName)
@@ -169,13 +147,13 @@ func TestBlackBox_Queries(t *testing.T) {
 					{Name: "city", From: "city", Type: natsql.ColumnTypeString},
 					{Name: "active", From: "active", Type: natsql.ColumnTypeBoolean},
 				},
-				Consumer: natsql.ConsumerConfig{BatchSize: 30, MaxDeliver: 5, AckWaitSeconds: 10},
+				Consumer: natsql.ConsumerConfig{MaxAckPending: 30, MaxDeliver: 5, AckWaitSeconds: 10},
 			},
 		},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
+	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
 	}
@@ -476,9 +454,13 @@ func TestBlackBox_Queries(t *testing.T) {
 		if _, ok := row["user_id"].(string); !ok {
 			t.Errorf("user_id type = %T, want string", row["user_id"])
 		}
-		// age is a number (float64 from JSON)
-		if _, ok := row["age"].(float64); !ok {
-			t.Errorf("age type = %T, want float64", row["age"])
+		// age is a number — decoded with UseNumber (D-07/D-08) for precision,
+		// so it surfaces as json.Number, which still serializes as a JSON number.
+		ageNum, ok := row["age"].(json.Number)
+		if !ok {
+			t.Errorf("age type = %T, want json.Number", row["age"])
+		} else if ageNum.String() != "25" {
+			t.Errorf("age = %s, want 25", ageNum.String())
 		}
 		// active is a boolean
 		if _, ok := row["active"].(bool); !ok {
@@ -526,9 +508,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_COMPOSITE"
 	createStream(t, ctx, js, streamName)
@@ -539,7 +519,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 				Name:         "orders",
 				SourceStream: streamName,
 				KeyFields:    []string{"org_id", "order_id"},
-				KeySeparator: "|",
+				KeySeparator: "/",
 				Columns: []natsql.ColumnConfig{
 					{Name: "org_id", From: "org_id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 					{Name: "order_id", From: "order_id", Type: natsql.ColumnTypeString, PrimaryKey: true},
@@ -551,7 +531,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
+	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
 	}
@@ -634,15 +614,15 @@ func TestFacade_NewWithNATS_NilConn(t *testing.T) {
 }
 
 func TestFacade_NewWithNATS_InvalidConfig(t *testing.T) {
-	srv, nc, _ := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	nc, _ := startEmbeddedNATS(t)
 
 	// Config with view that has no name — should fail validation
 	_, err := natsql.NewWithNATS(nc, &natsql.Config{
 		Views: []natsql.ViewConfig{
-			{SourceStream: "s", KeyFields: []string{"k"},
-				Columns: []natsql.ColumnConfig{{Name: "k", From: "k", Type: natsql.ColumnTypeString, PrimaryKey: true}}},
+			{
+				SourceStream: "s", KeyFields: []string{"k"},
+				Columns: []natsql.ColumnConfig{{Name: "k", From: "k", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+			},
 		},
 	})
 	if err == nil {
@@ -678,36 +658,9 @@ func TestFacade_WithHTTPServer(t *testing.T) {
 // NATS test helpers
 // ---------------------------------------------------------------------------
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
+func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	opts := &server.Options{
-		Port:       -1,
-		JetStream:  true,
-		StoreDir:   t.TempDir(),
-		ServerName: "bb-test",
-		NoLog:      true,
-		NoSigs:     true,
-	}
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("start NATS: %v", err)
-	}
-	srv.Start()
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS not ready")
-	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("connect: %v", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("JetStream: %v", err)
-	}
-	return srv, nc, js
+	return testutil.StartEmbeddedNATS(t)
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {

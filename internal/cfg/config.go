@@ -40,10 +40,10 @@ func (ct ColumnType) Valid() bool {
 
 // NATSConfig configures the NATS connection for the engine.
 type NATSConfig struct {
-	URL      string `yaml:"url,omitempty" json:"url,omitempty"`                // default "nats://localhost:4222"
-	Embedded bool   `yaml:"embedded,omitempty" json:"embedded,omitempty"`      // start embedded NATS
-	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"`    // JetStream store dir
-	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`              // embedded NATS port (0 = random)
+	URL      string `yaml:"url,omitempty" json:"url,omitempty"`             // default "nats://localhost:4222"
+	Embedded bool   `yaml:"embedded,omitempty" json:"embedded,omitempty"`   // start embedded NATS
+	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"` // JetStream store dir
+	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`           // embedded NATS port (0 = random)
 }
 
 // HTTPConfig configures the HTTP query API server.
@@ -65,6 +65,14 @@ func (cfg *Config) SetDefaults() {
 	}
 	if cfg.HTTP.Port == 0 {
 		cfg.HTTP.Port = 8080
+	}
+
+	// Migrate deprecated BatchSize to MaxAckPending
+	for i := range cfg.Views {
+		v := &cfg.Views[i]
+		if v.Consumer.BatchSize > 0 && v.Consumer.MaxAckPending == 0 {
+			v.Consumer.MaxAckPending = v.Consumer.BatchSize
+		}
 	}
 }
 
@@ -96,9 +104,12 @@ type IndexConfig struct {
 
 // ConsumerConfig configures the JetStream consumer for a view.
 type ConsumerConfig struct {
-	BatchSize      int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
+	MaxAckPending  int `yaml:"max_ack_pending,omitempty" json:"max_ack_pending,omitempty"`
 	MaxDeliver     int `yaml:"max_deliver,omitempty" json:"max_deliver,omitempty"`
 	AckWaitSeconds int `yaml:"ack_wait_seconds,omitempty" json:"ack_wait_seconds,omitempty"`
+
+	// Deprecated: Use MaxAckPending instead. Kept for backward compat.
+	BatchSize int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
 }
 
 // LoadConfig reads a YAML or JSON config file and returns the parsed Config.
@@ -143,22 +154,30 @@ func (cfg *Config) Validate() error {
 		prefix := fmt.Sprintf("views[%d]", i)
 
 		if v.Name == "" {
-			errs = append(errs, fmt.Sprintf("%s: name is required", prefix))
+			errs = append(errs, prefix+": name is required")
 		} else if viewNames[v.Name] {
 			errs = append(errs, fmt.Sprintf("%s: duplicate view name %q", prefix, v.Name))
 		}
 		viewNames[v.Name] = true
 
 		if v.SourceStream == "" {
-			errs = append(errs, fmt.Sprintf("%s: source_stream is required", prefix))
+			errs = append(errs, prefix+": source_stream is required")
 		}
 
 		if len(v.KeyFields) == 0 {
-			errs = append(errs, fmt.Sprintf("%s: at least one key_field is required", prefix))
+			errs = append(errs, prefix+": at least one key_field is required")
+		}
+
+		// Validate key_separator: every char must be a valid NATS KV key
+		// character (valid set: [-/_=.a-zA-Z0-9]). An invalid separator
+		// produces unstoreable composite keys at runtime ("nats: invalid key").
+		// Empty is allowed (defaults to "/" in BuildSchema).
+		if v.KeySeparator != "" && !isValidKeySeparator(v.KeySeparator) {
+			errs = append(errs, fmt.Sprintf("%s: key_separator %q contains characters that are not valid in a NATS KV key (allowed: letters, digits, and - / _ . =)", prefix, v.KeySeparator))
 		}
 
 		if len(v.Columns) == 0 {
-			errs = append(errs, fmt.Sprintf("%s: at least one column is required", prefix))
+			errs = append(errs, prefix+": at least one column is required")
 		}
 
 		hasPK := false
@@ -166,7 +185,7 @@ func (cfg *Config) Validate() error {
 			colPrefix := fmt.Sprintf("%s.columns[%d]", prefix, j)
 
 			if c.Name == "" {
-				errs = append(errs, fmt.Sprintf("%s: column name is required", colPrefix))
+				errs = append(errs, colPrefix+": column name is required")
 			}
 
 			if c.From == "" {
@@ -183,7 +202,56 @@ func (cfg *Config) Validate() error {
 		}
 
 		if !hasPK {
-			errs = append(errs, fmt.Sprintf("%s: at least one column must have primary_key=true", prefix))
+			errs = append(errs, prefix+": at least one column must have primary_key=true")
+		}
+
+		// CR-08 / FND-03: Cross-validate key_fields and primary_key columns
+		colNames := make(map[string]bool)
+		pkColNames := make(map[string]bool)
+
+		for _, c := range v.Columns {
+			if c.Name == "" {
+				continue // already caught above
+			}
+			if colNames[c.Name] {
+				errs = append(errs, fmt.Sprintf("%s: duplicate column name %q", prefix, c.Name))
+			}
+			colNames[c.Name] = true
+			if c.PrimaryKey {
+				pkColNames[c.Name] = true
+			}
+		}
+
+		// Every key_field must reference a column that exists and has primary_key=true
+		for _, kf := range v.KeyFields {
+			if !pkColNames[kf] {
+				if colNames[kf] {
+					errs = append(errs, fmt.Sprintf("%s: key_field %q references column %q which does not have primary_key=true", prefix, kf, kf))
+				} else {
+					errs = append(errs, fmt.Sprintf("%s: key_field %q does not reference any declared column", prefix, kf))
+				}
+			}
+		}
+
+		// Every column with primary_key=true must be listed in key_fields
+		for pkName := range pkColNames {
+			found := false
+			for _, kf := range v.KeyFields {
+				if kf == pkName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				errs = append(errs, fmt.Sprintf("%s: column %q has primary_key=true but is not listed in key_fields", prefix, pkName))
+			}
+		}
+	}
+
+	// CR-16 / CLN-02: Reject index configurations (not yet supported)
+	for i, v := range cfg.Views {
+		if len(v.Indexes) > 0 {
+			errs = append(errs, fmt.Sprintf("views[%d]: secondary indexes are not yet supported — remove indexes block from config", i))
 		}
 	}
 
@@ -193,11 +261,31 @@ func (cfg *Config) Validate() error {
 	return fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
 }
 
+// isValidKeySeparator reports whether every character in sep is a valid NATS KV
+// key character. NATS KV keys must match ^[-/_=.a-zA-Z0-9]+$.
+func isValidKeySeparator(sep string) bool {
+	for _, r := range sep {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '/' || r == '_' || r == '.' || r == '=':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // BuildSchema derives an immutable ViewSchema from the ViewConfig.
 func (vc *ViewConfig) BuildSchema() *kv.ViewSchema {
 	sep := vc.KeySeparator
 	if sep == "" {
-		sep = "|"
+		// Default separator must be a valid NATS KV key character
+		// (valid set: [-/_=.a-zA-Z0-9]). '/' is chosen because it is
+		// already escaped in PK part values by SanitizePK (→ "_s"),
+		// so composite keys cannot collide with embedded slashes.
+		sep = "/"
 	}
 
 	columns := make([]kv.ColumnSchema, len(vc.Columns))

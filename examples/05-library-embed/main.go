@@ -36,11 +36,11 @@ func main() {
 
 	// Start your own NATS server (or connect to existing)
 	srv, err := natsserver.NewServer(&natsserver.Options{
-		Host:     "127.0.0.1",
-		Port:     -1,
+		Host:      "127.0.0.1",
+		Port:      -1,
 		JetStream: true,
-		NoLog:    true,
-		NoSigs:   true,
+		NoLog:     true,
+		NoSigs:    true,
 	})
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
@@ -76,9 +76,11 @@ func main() {
 	}
 
 	// Create stream before starting engine
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "item-stream", Subjects: []string{"items.>"},
-	})
+	}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
 
 	eng, err := natsql.New(js, cfg) // You own the connection!
 	if err != nil {
@@ -86,10 +88,14 @@ func main() {
 	}
 	defer eng.Close()
 
-	eng.Start(ctx)
+	if err := eng.Start(ctx); err != nil {
+		log.Fatalf("Start: %v", err)
+	}
 
 	// Publish from your own NATS code
-	js.Publish(ctx, "items.created", []byte(`{"id": "item-1", "label": "My First Item"}`))
+	if _, err := js.Publish(ctx, "items.created", []byte(`{"id": "item-1", "label": "My First Item"}`)); err != nil {
+		log.Fatalf("Publish: %v", err)
+	}
 
 	time.Sleep(time.Second)
 
@@ -97,21 +103,26 @@ func main() {
 	b, _ := json.Marshal(res.Results)
 	fmt.Printf("  Query result: %s\n\n", b)
 
-
-
-
-	
 	// ── Option B: You have a NATS connection (convenience) ──────────
 	fmt.Println("═══ Pattern B: natsql.NewWithNATS(nc, cfg) ═══")
 	fmt.Println("Pass your NATS connection — engine handles JetStream setup.")
 	fmt.Println()
 
-	// Create stream before starting engine (Pattern B)
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: "note-stream", Subjects: []string{"notes.>"},
-	})
+	// Create a separate connection for Pattern B to avoid lifecycle hazard
+	// (NewWithNATS takes ownership of the connection, closing it on Close())
+	nc2, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		log.Fatalf("Connect (B): %v", err)
+	}
 
-	eng2, err := natsql.NewWithNATS(nc, &natsql.Config{
+	// Create stream before starting engine (Pattern B)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: "note-stream", Subjects: []string{"notes.>"},
+	}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
+
+	eng2, err := natsql.NewWithNATS(nc2, &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{Name: "notes", SourceStream: "note-stream", KeyFields: []string{"id"},
 				Columns: []natsql.ColumnConfig{
@@ -126,8 +137,12 @@ func main() {
 	}
 	defer eng2.Close()
 
-	eng2.Start(ctx)
-	js.Publish(ctx, "notes.created", []byte(`{"id": "note-1", "text": "Hello from NewWithNATS!"}`))
+	if err := eng2.Start(ctx); err != nil {
+		log.Fatalf("Start (B): %v", err)
+	}
+	if _, err := js.Publish(ctx, "notes.created", []byte(`{"id": "note-1", "text": "Hello from NewWithNATS!"}`)); err != nil {
+		log.Fatalf("Publish: %v", err)
+	}
 
 	time.Sleep(time.Second)
 

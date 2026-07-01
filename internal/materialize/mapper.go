@@ -3,6 +3,7 @@ package materialize
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsql "github.com/gacopys/natsql/internal/cfg"
-	"github.com/gacopys/natsql/internal/kv"
+	kvpkg "github.com/gacopys/natsql/internal/kv"
 )
 
 const maxNestingDepth = 8 // T-02-02: limit JSON path depth
@@ -20,16 +21,12 @@ const maxNestingDepth = 8 // T-02-02: limit JSON path depth
 var (
 	// ErrMalformedEvent indicates an event cannot be processed
 	// and should be acked + sent to DLQ. Never blocks the stream.
-	ErrMalformedEvent = fmt.Errorf("malformed event")
-
-	// ErrSkipAndAck indicates the event should be silently skipped.
-	// No error logging needed.
-	ErrSkipAndAck = fmt.Errorf("skip and ack")
+	ErrMalformedEvent = errors.New("malformed event")
 )
 
 // RowMutation represents the result of mapping one event to a row mutation.
 type RowMutation struct {
-	PK        string         // encoded primary key value
+	PkParts   []string       // raw primary key component values (not sanitized, not joined)
 	RowData   map[string]any // column name → typed value
 	StreamSeq uint64         // stream sequence from message metadata
 	Timestamp time.Time      // event timestamp from message metadata
@@ -39,17 +36,17 @@ type RowMutation struct {
 // JSON path extraction and type validation.
 type Mapper struct {
 	viewCfg *natsql.ViewConfig
-	schema  *kv.ViewSchema
+	schema  *kvpkg.ViewSchema
 }
 
 // NewMapper creates a new Mapper from a view configuration.
 // Returns an error if the config is nil or has no columns.
 func NewMapper(viewCfg *natsql.ViewConfig) (*Mapper, error) {
 	if viewCfg == nil {
-		return nil, fmt.Errorf("view config is nil")
+		return nil, errors.New("view config is nil")
 	}
 	if len(viewCfg.Columns) == 0 {
-		return nil, fmt.Errorf("view config has no columns")
+		return nil, errors.New("view config has no columns")
 	}
 
 	schema := viewCfg.BuildSchema()
@@ -68,7 +65,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	decoder := json.NewDecoder(bytes.NewReader(msg.Data()))
 	decoder.UseNumber()
 	if err := decoder.Decode(&data); err != nil {
-		return nil, fmt.Errorf("%w: invalid JSON: %v", ErrMalformedEvent, err)
+		return nil, fmt.Errorf("%w: invalid JSON: %w", ErrMalformedEvent, err)
 	}
 
 	// 2. Extract column values
@@ -76,12 +73,12 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	for _, col := range m.viewCfg.Columns {
 		val, err := extractNestedField(data, col.From)
 		if err != nil {
-			return nil, fmt.Errorf("%w: column %q: %v", ErrMalformedEvent, col.Name, err)
+			return nil, fmt.Errorf("%w: column %q: %w", ErrMalformedEvent, col.Name, err)
 		}
 
 		typedVal, err := validateType(val, col.Type, col.Name)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrMalformedEvent, err)
+			return nil, fmt.Errorf("%w: %w", ErrMalformedEvent, err)
 		}
 
 		rowData[col.Name] = typedVal
@@ -98,20 +95,14 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 		pkParts[i] = stringifyValue(val)
 	}
 
-	separator := m.schema.KeySeparator
-	if separator == "" {
-		separator = "|"
-	}
-	pk := strings.Join(pkParts, separator)
-
 	// 4. Extract metadata
 	meta, err := msg.Metadata()
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading metadata: %v", ErrMalformedEvent, err)
+		return nil, fmt.Errorf("%w: reading metadata: %w", ErrMalformedEvent, err)
 	}
 
 	return &RowMutation{
-		PK:        pk,
+		PkParts:   pkParts, // raw parts — no sanitization, no joining
 		RowData:   rowData,
 		StreamSeq: meta.Sequence.Stream,
 		Timestamp: meta.Timestamp,
@@ -122,6 +113,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 // Supports paths like "user.id" → data["user"]["id"].
 // Limits nesting depth to 8 levels per T-02-02.
 func extractNestedField(data map[string]any, path string) (any, error) {
+	path = strings.TrimPrefix(path, "$.")
 	parts := strings.Split(path, ".")
 	if len(parts) > maxNestingDepth {
 		return nil, fmt.Errorf("path %q exceeds maximum nesting depth of %d", path, maxNestingDepth)
@@ -210,28 +202,24 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 }
 
 // stringifyValue converts a typed value to its string representation
-// for use in PK construction, with sanitization for KV key safety.
+// for use in PK construction. Returns the raw string — sanitization
+// happens at the KV boundary in BuildPkKey.
 func stringifyValue(val any) string {
-	var s string
 	switch v := val.(type) {
 	case string:
-		s = v
+		return v
 	case json.Number:
-		s = v.String() // exact representation, no float64 precision loss
+		return v.String() // exact representation, no float64 precision loss
 	case float64:
-		s = strconv.FormatFloat(v, 'f', -1, 64)
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	case bool:
 		if v {
-			s = "true"
-		} else {
-			s = "false"
+			return "true"
 		}
+		return "false"
 	case time.Time:
-		s = v.Format(time.RFC3339Nano)
+		return v.Format(time.RFC3339Nano)
 	default:
-		s = fmt.Sprint(v)
+		return fmt.Sprint(v)
 	}
-	return kv.SanitizePK(s)
 }
-
-

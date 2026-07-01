@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	"github.com/gacopys/natsql/internal/query"
 	"github.com/gacopys/natsql/internal/transport"
@@ -69,6 +69,28 @@ func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetS
 // Transport tests
 // ---------------------------------------------------------------------------
 
+// TestRegisterNATSHandler_FlushError verifies that RegisterNATSHandler
+// returns any Flush error to the caller.
+func TestRegisterNATSHandler_FlushError(t *testing.T) {
+	srv, nc, js := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+	_ = js
+
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	// Close NATS connection before registering — Flush will fail
+	nc.Close()
+
+	_, err := transport.RegisterNATSHandler(nc, handler)
+	if err == nil {
+		t.Fatal("expected error from RegisterNATSHandler with closed connection, got nil")
+	}
+	t.Logf("Got expected error: %v", err)
+}
+
 // TestNATSRequestReply verifies that a NATS request on "natsql.query"
 // returns the expected JSON response from the handler.
 func TestNATSRequestReply(t *testing.T) {
@@ -89,7 +111,7 @@ func TestNATSRequestReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterNATSHandler failed: %v", err)
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	// Send request
 	msg, err := nc.Request("natsql.query", []byte("SELECT * FROM test_users WHERE id = 'u1'"), 2*time.Second)
@@ -131,7 +153,7 @@ func TestNATSRequestError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterNATSHandler failed: %v", err)
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	msg, err := nc.Request("natsql.query", []byte("INVALID SQL"), 2*time.Second)
 	if err != nil {
@@ -166,7 +188,12 @@ func TestHTTPQueryEndpoint(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -201,7 +228,12 @@ func TestHTTPInvalidBody(t *testing.T) {
 	defer ts.Close()
 
 	// Send invalid JSON body
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{invalid json`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{invalid json`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -225,7 +257,12 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 
 	// Build a body larger than maxRequestBodySize (1MB)
 	largeSQL := `{"sql":"SELECT * FROM test WHERE x = '` + strings.Repeat("A", 2<<20) + `'"}`
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(largeSQL))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(largeSQL))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -233,6 +270,68 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want %d (413)", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// TestHTTPBodyTrailingData verifies that trailing non-whitespace data
+// after the JSON body is rejected with 400.
+func TestHTTPBodyTrailingData(t *testing.T) {
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, handler)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Body with trailing non-whitespace data
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query",
+		strings.NewReader(`{"sql":"SELECT 1"}extra`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (400 Bad Request)", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestHTTPBodyTrailingWhitespaceOK verifies that trailing whitespace
+// after the JSON body is accepted (200 OK).
+func TestHTTPBodyTrailingWhitespaceOK(t *testing.T) {
+	handler := &mockHandler{
+		result: &query.QueryResult{},
+	}
+
+	router := transport.NewRouter()
+	transport.RegisterHTTPHandler(router, handler)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Body with trailing whitespace/newline — should be accepted
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query",
+		strings.NewReader("{\"sql\":\"SELECT 1\"}  \n  "))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d (200 OK)", resp.StatusCode, http.StatusOK)
 	}
 }
 
@@ -247,7 +346,12 @@ func TestHTTPContentType(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}

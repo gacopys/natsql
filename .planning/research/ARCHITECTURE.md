@@ -1,1065 +1,1128 @@
-# Architecture: Stream-to-KV Materialized View Engine on NATS
+# Architecture Remediation: Code Review Fixes for natsql v1.2
 
-**Project:** natsql  
-**Researched:** 2026-05-23  
-**Confidence:** HIGH (confirmed against NATS JetStream docs and comparable SQL-over-KV engines)
+**Project:** natsql — NATS-native materialized view engine
+**Researched:** 2026-05-31
+**Mode:** Architecture remediation for 25 code review findings (v1.2 milestone)
+**Confidence:** HIGH (all findings verified against source code, fixes designed with zero new dependencies)
 
 ## Executive Summary
 
-natsql is a materialized view engine that consumes JetStream events, maintains NATS KV bucket snapshots, and serves read-only SQL queries. The architecture separates three concerns — **materialization** (stream→KV), **query** (SQL→KV reads), and **transport** (NATS request-reply / HTTP / Go embed) — into independent components that share a common KV store. The design follows established NATS patterns (CAS-based state management, durable consumer recovery, KV key hierarchy) and adapts the parse→validate→plan→execute pipeline from go-mysql-server to the KV-backed execution model.
+This document describes the architectural changes required to fix 25 code review findings (CR-01 through CR-25) in natsql v1.2. The fixes cluster into five architectural domains: **(1) Materializer ordering and error handling**, **(2) Canonical PK encoding pipeline**, **(3) Query planner predicate correctness**, **(4) Engine lifecycle synchronization**, and **(5) Config validation and transport hardening**. No new components are introduced — the 3-component model (Materializer, Query Engine, Transport) is preserved. All fixes are targeted modifications to existing components with well-defined integration boundaries.
+
+The most architecturally significant change is removing the 16-goroutine worker pool from the materializer (CR-01), restoring the per-view ordered processing guarantee that NATS JetStream's single-consumer model provides. The second most significant is unifying the PK encoding pipeline (CR-02), eliminating a correctness bug where writes and reads produce different keys for the same data.
 
 ---
 
-## 1. High-Level Component Diagram
+## 1. Architecture Overview (Post-Fix)
 
 ```
-                          ┌─────────────────────┐
-                          │  Config (YAML/JSON)  │
-                          │  source stream,      │
-                          │  columns, PK, indexes│
-                          └──────────┬───────────┘
-                                     │ defines
-                                     ▼
-┌────────────────────────────────────────────────────────────────┐
-│                     Materializer (per-view)                     │
-│                                                                │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────────────┐  │
-│  │ Durable Pull │──▶ Event→Row   │──▶ KV Writer            │  │
-│  │ Consumer     │  │ Mapper      │  │ (PK + index entries) │  │
-│  └──────────────┘  └─────────────┘  └──────────────────────┘  │
-│                                                                │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Rebuild Controller: Purge bucket → DeliverAll → replay  │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────┬──────────────────────────────────────┘
-                          │ writes to
-                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    NATS KV Bucket (natsql-views)                 │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  {view}/pk/{encoded_pk}     →  full row JSON            │   │
-│  │  {view}/idx/{col}/{val}/{pk}→  "" (presence marker)     │   │
-│  │  {view}/meta/schema         →  schema definition         │   │
-│  │  {view}/meta/consumer       →  stream seq, state         │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │ reads from
-                          ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      Query Engine (stateless)                    │
-│                                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌──────────────┐   │
-│  │ SQL      │─▶│ Validate │─▶│ Plan      │─▶│ KV Executor  │   │
-│  │ Parser   │  │          │  │ Builder   │  │              │   │
-│  └──────────┘  └──────────┘  └───────────┘  └──────────────┘   │
-│                                                                  │
-│  Results returned through any of:                                │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐   │
-│  │ NATS Req-Reply  │  │ HTTP/JSON API   │  │ In-process Go  │   │
-│  │ (nc.Request)    │  │ (net/http)      │  │ (library call) │   │
-│  └─────────────────┘  └─────────────────┘  └────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Key design properties
-
-| Property | Choice | Rationale |
-|----------|--------|-----------|
-| **State ownership** | KV is authoritative snapshot; stream is authoritative changelog | KV serves reads; stream enables rebuild. No dual-write problem |
-| **Component coupling** | Materializer writes KV; Query Engine reads KV | No direct coupling — they share only the KV bucket name |
-| **Processing model** | Single-threaded event loop per view | Simplifies consistency; no CAS conflicts within one materializer |
-| **Replication** | NATS handles it (JetStream + KV replicas) | Zero infrastructure beyond NATS |
-| **Query engine** | Stateless, per-request | No session state, no transaction state, trivial to scale |
-
----
-
-## 2. Materializer Component
-
-### 2.1 Purpose
-
-Consume a JetStream durably, map each event to a row, and upsert the corresponding KV entries (primary row + secondary index entries).
-
-### 2.2 Consumer Setup
-
-```
-Stream:   user-provided source stream (e.g., "ORDERS", "users")
-Consumer: Durable pull consumer per view
-Policy:   DeliverAll on fresh start, DeliverNew on resume
-Ack:      AckExplicit — only ack after KV writes succeed
-Ordering: Single consumer, single-threaded processing
-Rebuild:  Delete consumer, recreate with DeliverAll
-```
-
-**Key decisions:**
-
-- **Pull consumer over push**: Pull gives explicit flow control via `Fetch()` / `Messages()`; no DeliverSubject needed; works through NATS auth boundaries. Recommended by NATS docs for new projects.
-- **Single consumer per view, not queue group**: Queue groups distribute messages across workers. For materialization, we need ordered processing (events must be applied in stream order). A single consumer guarantees order. If throughput becomes a bottleneck, shard the source stream by subject and create one materializer per shard.
-- **Ack after KV write, not before**: If we ack then crash before KV write completes, we lose the event. Ack must happen after the entire `Put` sequence (PK + all indexes) succeeds. JetStream's redelivery gives at-least-once; KV's CAS gives idempotency on replay.
-
-### 2.3 Event-to-Row Mapping
-
-The row mapper is a configurable transformation. For v1, it supports:
-
-```yaml
-# config.yaml
-views:
-  - name: "users"
-    source_stream: "users_events"
-    source_subject: "users.>"           # optional filter
-    columns:
-      - name: "id"
-        from: "$.user_id"               # JSON path in event payload
-        type: "string"
-        primary_key: true
-      - name: "name"
-        from: "$.name"
-        type: "string"
-      - name: "email"
-        from: "$.email"
-        type: "string"
-      - name: "age"
-        from: "$.age"
-        type: "int"
-    indexes:
-      - column: "age"                   # equality lookups
-      - column: "name"                   # range scans
-    event_type_field: "$.type"          # optional: which field determines event type
-    delete_on: "user_deleted"           # optional: event type that removes the row
-```
-
-**Mapper interface:**
-
-```go
-// RowMapper converts a JetStream message into a set of KV mutations.
-// Implementations are config-defined and stateless.
-type RowMapper interface {
-    // MapRow produces the mutations for this event.
-    // Returns nil mutations if the event should be skipped.
-    // Returns ErrSkipAndAck to silently skip (no error logging).
-    // Returns ErrMalformedEvent to log+skip (stream continues).
-    MapRow(msg jetstream.Msg) (*RowMutation, error)
-}
-
-type RowMutation struct {
-    PK           string            // encoded primary key value
-    RowData      map[string]any    // the full column values
-    IsDelete     bool              // true if this is a tombstone
-}
-```
-
-**Schema evolution strategy for v1:**
-
-Schema is defined at view creation time and is immutable without a full rebuild. To "evolve" the schema:
-
-1. Stop the old materializer
-2. Define a new view config with the new schema
-3. Run a full rebuild (purge KV bucket, replay stream from beginning)
-
-The v1 position: **schema evolution = re-materialization**. This matches the project requirement ("Schema migration / ALTER VIEW with backfill — requires full re-materialize").
-
-A future v2 could support additive schema changes (new columns with defaults) but v1 keeps it simple.
-
-### 2.4 KV Writer
-
-The KV writer translates `RowMutation` into actual KV operations:
-
-```go
-type KVWriter struct {
-    kv     jetstream.KeyValue
-    view   string // view name, used as key prefix
-}
-
-func (w *KVWriter) Apply(ctx context.Context, mut *RowMutation) error {
-    // 1. If delete: remove PK row + all index entries for old values
-    if mut.IsDelete {
-        oldRow, err := w.kv.Get(ctx, w.pkKey(mut.PK))
-        if err == nil {
-            oldValues := parseRow(oldRow.Value())
-            // Remove each index entry for the old values
-            for _, idx := range mut.Indexes {
-                w.kv.Delete(ctx, w.idxKey(idx.Name, oldValues[idx.Name], mut.PK))
-            }
-        }
-        return w.kv.Delete(ctx, w.pkKey(mut.PK))
-    }
-
-    // 2. Read existing row (if any) for index diff computation
-    oldValues := map[string]any{}
-    if entry, err := w.kv.Get(ctx, w.pkKey(mut.PK)); err == nil {
-        oldValues = parseRow(entry.Value())
-    }
-
-    // 3. Write PK row
-    rowJSON, _ := json.Marshal(mut.RowData)
-    _, err := w.kv.Put(ctx, w.pkKey(mut.PK), rowJSON)
-    if err != nil {
-        return err
-    }
-
-    // 4. Diff indexes: remove old index entries, add new ones
-    for _, idx := range mut.Indexes {
-        oldVal := oldValues[idx.Name]
-        newVal := mut.RowData[idx.Name]
-
-        if oldVal != newVal {
-            if oldVal != nil {
-                w.kv.Delete(ctx, w.idxKey(idx.Name, fmt.Sprint(oldVal), mut.PK))
-            }
-            if newVal != nil {
-                w.kv.Put(ctx, w.idxKey(idx.Name, fmt.Sprint(newVal), mut.PK), nil)
-            }
-        }
-    }
-
-    // 5. Update consumer progress marker
-    // (handled by materializer controller, not the writer)
-    return nil
-}
-```
-
-**Atomicity note**: NATS KV does NOT support multi-key atomic writes. The sequence PK-write → index-delete → index-create has crash windows where:
-- PK was written but index entries are stale
-- Index entries point to a PK that doesn't exist (because of in-progress delete)
-
-**Mitigation for v1**: These windows are acceptable given the read-committed consistency model. A periodic "index sweep" (separate goroutine) can validate index→PK consistency and repair drift. For v1, skip the sweep — document the gap.
-
-### 2.5 Event Processing Loop
-
-```
-for {
-    select {
-    case msg := <-consumer.Messages():
-        // 1. Deserialize headers for metadata
-        seq := msg.Metadata().Sequence.Stream
-
-        // 2. Map event → row mutation
-        mut, err := mapper.MapRow(msg)
-
-        // 3. Apply to KV
-        if err == nil {
-            if mut != nil {
-                err = writer.Apply(ctx, mut)
-            }
-        }
-
-        // 4. Ack only after successful KV write
-        if err == nil {
-            msg.Ack()          // at-least-once delivery
-            saveProgress(seq)  // optionally persist for rebuild-from-seq
-        } else if errors.Is(err, ErrMalformedEvent) {
-            msg.Ack()          // skip malformed, don't block stream
-            log.Warn("skipped malformed event", "seq", seq, "error", err)
-        } else {
-            msg.Nak()          // retry on transient errors
-        }
-
-    case <-rebuildRequest:
-        // Full rebuild flow (see §7)
-    }
-}
-```
-
-### 2.6 Error Handling Policy
-
-| Error | Action | Rationale |
-|-------|--------|-----------|
-| Malformed event JSON | Ack + skip + log | One bad event shouldn't block the stream |
-| Column type mismatch | Ack + skip + log | Same reasoning as malformed |
-| KV write conflict (CAS) | Retry (read-modify-write) | CAS protects against concurrent index sweep |
-| NATS connection lost | Nak → redeliver | At-least-once; redeliver when connected |
-| Context cancelled | Return immediately | Graceful shutdown |
-| All other errors | Nak with backoff | Transient: retry with exponential backoff |
-
----
-
-## 3. KV Layout Design
-
-### 3.1 Key Space
-
-All state for all views lives in a single KV bucket named `natsql-views`.
-
-```
-Key hierarchy:
-
-natsql-views/
-├── {view}/
-│   ├── pk/
-│   │   └── {encoded_pk_value}    →  {"id":"...", "name":"...", ...}
-│   ├── idx/
-│   │   └── {col}/
-│   │       └── {encoded_val}/
-│   │           └── {encoded_pk}  →  "" (empty, just key presence)
-│   └── meta/
-│       ├── schema                →  JSON schema definition
-│       ├── consumer-seq          →  last applied stream sequence
-│       └── status                →  {"state":"running|rebuilding|paused"}
-```
-
-### 3.2 Encoding Rules
-
-| Value type | Encoding | Example |
-|-----------|----------|---------|
-| `string` | As-is (KV keys support `[a-zA-Z0-9_\-./=]`) | `alice@example.com` |
-| `int` / `int64` | Zero-padded hex for range-sortable keys | `000000000000002a` (42) |
-| `float64` | Not supported as PK/idx in v1 | — |
-| `bool` | `t` / `f` | `t` |
-| `time.Time` | RFC3339Nano (sortable when padded) | `2026-05-23T12:00:00Z` |
-| `null` / `nil` | Omitted from index (null values not indexed) | — |
-
-**PK value encoding must be reversible** (to decode from a key back to a value) and **must not contain `/`** (KV key separator). Use URL-safe base64 or hex for opaque PKs.
-
-For range-sortable numeric encodings, use fixed-width hex:
-
-```go
-func encodeInt(v int64) string {
-    return fmt.Sprintf("%016x", v) // 16 hex chars = 64 bits
-}
-
-func decodeInt(s string) (int64, error) {
-    return strconv.ParseInt(s, 16, 64)
-}
-```
-
-### 3.3 PK Row Format
-
-```json
-{
-    "id": "abc123",
-    "name": "Alice",
-    "email": "alice@example.com",
-    "age": 30,
-    "_meta": {
-        "stream_seq": 42,
-        "updated_at": "2026-05-23T12:00:00Z",
-        "deleted": false
-    }
-}
-```
-
-The `_meta` field is injected by the materializer (not from the event). It enables:
-- **Rebuild validation**: detect if a row was written by a stale version of the code
-- **Debugging**: trace which stream event produced this row
-
-### 3.4 Index Key Design
-
-```
-{view}/idx/{col}/{encoded_val}/{encoded_pk}
-```
-
-**Why include PK in the key**: Two index entries with the same column value (e.g., `age=30`) must not collide. Appending the PK makes each key unique within the KV bucket.
-
-**Why empty value**: The index entry itself carries no data — the key IS the data. An empty value saves KV storage.
-
-**Range scan mechanics**: To query `WHERE age > 25 AND age < 35`:
-1. List all keys with prefix `users/idx/age/`
-2. Filter client-side for keys between `25` and `35` (using the hex encoding for proper lexicographic ordering)
-3. Extract PKs from the remaining keys
-4. Batch-fetch PK rows
-5. The hex encoding of ints gives us proper byte-order sorting for prefix scan → range filter
-
-**Limitation**: NATS KV `ListKeys` returns ALL keys in the bucket (no prefix filtering at the server level). For large datasets, this is expensive. Mitigation: use per-index key prefixes so `ListKeys` returns only index keys, then filter client-side.
-
-### 3.5 Bucket Configuration
-
-```go
-kvConfig := jetstream.KeyValueConfig{
-    Bucket:   "natsql-views",
-    Storage:  jetstream.FileStorage,
-    Replicas: replicas,
-    // No MaxValueSize set (default 64KB) — sufficient for row data
-    // History: 1 — we only need current state
-    // TTL: 0 — data lives until explicitly deleted
-}
-```
-
-**Should each view get its own bucket?** No for v1. One bucket is simpler to manage, and NATS KV bucket count is limited. If isolation is needed later, the `view` key prefix provides logical separation. A future optimization could use per-view buckets for independent TTL/replication settings.
-
-**History of 1**: The KV only keeps the latest revision per key. We don't need historical row values — the source stream IS the history. This saves storage.
-
----
-
-## 4. Query Engine Architecture
-
-### 4.1 Pipeline
-
-```
-SQL text ──▶ Parser ──▶ AST ──▶ Validator ──▶ Resolved AST ──▶ Plan Builder ──▶ Plan ──▶ Executor ──▶ Rows
-```
-
-### 4.2 SQL Parser
-
-**Library choice**: `github.com/xwb1989/sqlparser` — a standalone extract of Vitess's MySQL parser. It handles our v1 subset (SELECT with WHERE, comparison operators, LIMIT) with no external dependencies.
-
-```go
-import "github.com/xwb1989/sqlparser"
-
-stmt, err := sqlparser.Parse("SELECT id, name FROM users WHERE age = 30 LIMIT 10")
-// stmt is *sqlparser.Select with:
-//   .SelectExprs (columns)
-//   .From (table refs)
-//   .Where (*sqlparser.Where with comparison)
-//   .Limit (*sqlparser.Limit with *sqlparser.SQLVal)
-```
-
-**Risk**: xwb1989/sqlparser was extracted in 2019 and may lag behind Vitess upstream. If it lacks features, fall back to `github.com/dolthub/vitess` (actively maintained by Dolt). Or for our tiny SQL subset, write a hand-written parser in ~200 lines of Go using `text/scanner` — this eliminates the dependency entirely and gives full control over error messages.
-
-**Recommendation**: Start with hand-written parser for v1 (SELECT only, `WHERE col = val / col > val / col < val`, `LIMIT`). 99% of the complexity in SQL parsers comes from INSERT/UPDATE/DELETE, JOINs, and subqueries — none of which we support. A hand-written parser is simpler and has zero dependency risk.
-
-```go
-type Query struct {
-    Select     []string       // column names; nil or empty = *
-    From       string         // view name
-    Where      []Condition   // AND-connected
-    Limit      int           // 0 = no limit
-    OrderBy    []OrderExpr   // v2 feature
-}
-
-type Condition struct {
-    Column string
-    Op     Op // Eq, Gt, Lt, Gte, Lte, Neq
-    Value  any
-}
-```
-
-### 4.3 Validator
-
-Checks the parsed query against the view schema (loaded from KV `{view}/meta/schema`):
-
-| Check | Action |
-|-------|--------|
-| View exists in config | Error: "materialized view 'X' not found" |
-| SELECT columns exist | Error: "column 'X' not found" |
-| WHERE column exists | Error: "column 'X' not found" |
-| WHERE value type matches schema | Warning: implicit cast (string→int) or error |
-| WHERE operator supported | Error: "operator 'LIKE' not supported in v1" |
-| LIMIT is positive int | Error: "LIMIT must be positive" |
-
-### 4.4 Plan Builder
-
-The plan builder turns a validated query into an executable plan tree:
-
-```
-Plan types:
-
-SelectPlan           ← top-level node
-  ├─ TableScanPlan   ← full scan (all rows in view)
-  │   └─ FilterPlan  ← apply WHERE conditions
-  │       └─ LimitPlan  ← slice rows
-  │
-  ├─ IndexPlan       ← look up through index, fetch rows
-  │   └─ FilterPlan  ← apply remaining conditions
-  │       └─ LimitPlan
-```
-
-**Plan selection logic:**
-
-```
-For each condition in WHERE:
-  If condition matches an index:
-    - For EQ condition: Use IndexPlan with single-point lookup
-    - For GT/LT/GTE/LTE condition: Use IndexPlan with range scan
-  If condition is on PK:
-    - For EQ: Use PKPointLookupPlan (single Get, cheapest)
-    - For range: fall back to full TableScan
-
-If any condition uses an index:
-  Use IndexPlan for the most selective condition
-  Apply remaining conditions as FilterPlan on top
-
-If no condition uses an index or PK:
-  Use TableScanPlan (list all view keys, filter in memory)
-```
-
-**Cost estimation (v2 feature, not in scope for v1 MVP):**
-In v1, the planner uses simple heuristics:
-1. PK equality lookup (single `kv.Get`) — cheapest
-2. Index equality lookup (single `kv.Get` by index key prefix, then batch `kv.Get` for PKs) — medium
-3. Index range scan (list index keys, filter, batch fetch PKs) — medium
-4. Full table scan (list all PK keys, fetch each, filter) — most expensive
-
-For v1, always prefer (1) > (2) > (3) > (4).
-
-### 4.5 Executor
-
-```go
-type Executor struct {
-    kv   jetstream.KeyValue
-    view string
-}
-
-// Execute runs a plan against the KV store.
-func (e *Executor) Execute(ctx context.Context, plan *SelectPlan) ([]Row, error)
-```
-
-**Execution strategies:**
-
-| Plan type | KV operations | Complexity |
-|-----------|--------------|------------|
-| PKPointLookup (WHERE id = 'x') | 1× `kv.Get("{view}/pk/{pk}")` | O(1) |
-| IndexEqLookup (WHERE age = 30, age indexed) | 1× list index prefix → N× `kv.Get` PK rows | O(N) where N = matching rows |
-| IndexRangeScan (WHERE age > 25 AND age < 35, age indexed) | List index prefix + client filter → N× `kv.Get` PK rows | O(K + N) where K = total indexed values for column |
-| FullScan (no useful index) | List all `{view}/pk/` keys → N× `kv.Get` | O(M) where M = total rows in view |
-
-**Batch fetch optimization**: When a plan produces N PKs to fetch, batch them with parallel `kv.Get` calls using a worker pool. NATS KV gets are network round-trips; batching reduces latency.
-
-**Limit pushdown**: If the plan has a `LimitPlan` directly above an `IndexEqLookup`, stop fetching PKs once the limit is reached. This avoids unnecessary KV reads.
-
-### 4.6 Query Engine Interface
-
-```go
-type Engine struct {
-    // Views returns the schema for a named view.
-    Views() map[string]*ViewSchema
-}
-
-// Execute runs a SQL query against the materialized state.
-// Returns structured rows, not wire-format bytes.
-func (e *Engine) Execute(ctx context.Context, query string) (*Result, error)
-
-type Result struct {
-    Columns []Column
-    Rows    []Row
-    Err     error
-}
-```
-
-The engine is:
-- **Stateless**: no connections, no transactions, no prepared statement cache (for v1)
-- **Thread-safe**: multiple goroutines can call `Execute` concurrently
-- **Context-aware**: cancellation propagates to KV operations
-
----
-
-## 5. Index Maintenance
-
-### 5.1 Index Update Sequence
-
-```
-Event arrives
-  │
-  ├── 1. Read existing PK row from KV (if exists)
-  │        kv.Get("{view}/pk/{pk}") → oldRow
-  │
-  ├── 2. Compute old vs new column values
-  │        oldRow["age"] = 25, newRow["age"] = 30
-  │
-  ├── 3. Write new PK row
-  │        kv.Put("{view}/pk/{pk}", newRowJSON)
-  │
-  ├── 4. Remove old index entries (for changed values)
-  │        kv.Delete("{view}/idx/age/25/{pk}")
-  │
-  └── 5. Add new index entries
-           kv.Put("{view}/idx/age/30/{pk}", nil)
-```
-
-**Crash windows:**
-
-| After step | If crash happens | Result | Severity |
-|-----------|-----------------|--------|----------|
-| 1 | Old row read but nothing written | Event replayed on restart, applies cleanly | None |
-| 2 | — | No KV change, idempotent replay | None |
-| 3 | PK written, indexes stale | Row exists with old index entries | **Low**: query returns row via PK, index query misses it |
-| 4 | PK written, some old indexes deleted, some new indexes missing | Row exists, old index might not find it, new index not yet set | **Low**: temporary blind spot
-| 5 | All changes complete | Consistent | None |
-
-**Mitigation for v1**: Accept the temporary inconsistency (read-committed model). A "background consistency sweep" (v2) would list all index entries, verify each PK exists, and clean up orphans. The sweep runs periodically and on startup.
-
-### 5.2 Index Consistency Sweep (v2 design, noted for roadmap)
-
-```go
-func (s *IndexSweeper) Sweep(ctx context.Context) {
-    // 1. List all index keys
-    // 2. For each index entry, check PK exists
-    // 3. Remove orphan index entries (PK deleted but index not cleaned)
-    // 4. Find PKs that are missing expected index entries and rewrite them
-}
-```
-
-The sweep is best-effort. It runs less frequently (every N events, or on a timer). CAS prevents races with the live materializer.
-
-### 5.3 What Happens with Concurrent Writes
-
-Since there is exactly ONE materializer per view (single consumer), there are no concurrent writes to the same view's KV keys from the materialization path. The only concurrent readers are:
-- **Query engine**: reads only, no conflict
-- **Index sweep** (if running): reads and deletes, uses CAS to avoid races with materializer
-
----
-
-## 6. Dual Interface: NATS + HTTP from the Same Engine
-
-### 6.1 Architecture
-
-```
-                    ┌──────────────┐
-                    │  QueryEngine  │
-                    │  Execute()    │
-                    └──────┬───────┘
+│                      Engine (internal/engine)                    │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Start() — synchronous setup with error propagation (CR-07)│  │
+│  │   ├── net.Listen HTTP before goroutine                    │  │
+│  │   ├── Materializer setup returns errors synchronously     │  │
+│  │   └── NATS handler failure is fatal (documented)          │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└──────────────────────────┬──────────────────────────────────────┘
                            │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ NATS     │ │ HTTP     │ │ In-proc  │
-        │ Handler  │ │ Handler  │ │ Caller   │
-        └──────────┘ └──────────┘ └──────────┘
+┌──────────────────────────▼──────────────────────────────────────┐
+│                  Materializer (internal/materialize)             │
+│                                                                  │
+│  ┌──────────────┐   ┌────────────────┐   ┌──────────────────┐  │
+│  │ Durable Pull │──▶│ Sequential     │──▶│ KV Writer        │  │
+│  │ Consumer     │   │ Process Loop   │   │ (ordered, per-   │  │
+│  │ (no worker   │   │ (single        │   │  view)           │  │
+│  │  pool)       │   │  goroutine)    │   │                  │  │
+│  └──────────────┘   └────────────────┘   └───────┬──────────┘  │
+│        │                                          │            │
+│        │ CR-11: No InactiveThreshold              │            │
+│        │ CR-12: Rename BatchSize                  │            │
+│        │                                          │            │
+│        │ Error Classification (CR-10):            │            │
+│        │ ├── ErrMalformedEvent → DLQ + Ack        │            │
+│        │ ├── Transient error → NAK + backoff      │            │
+│        │ └── Terminal error → DLQ + Ack           │            │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ writes via
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              NATS KV Bucket (single, shared)                     │
+│  Keys: {view}/pk/{pk_encoded_once} ← Canonical PK (CR-02)      │
+│        {view}/meta/schema                                        │
+│  Values: schema columns only (SELECT * filters _meta) (CR-04)   │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ reads from
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Query Engine (internal/query)                 │
+│                                                                  │
+│  ┌──────────┐   ┌──────────────┐   ┌────────────┐              │
+│  │ Parser   │──▶│ Planner      │──▶│ Executor   │              │
+│  │ (CR-05:  │   │ (CR-03: all  │   │ (CR-04:    │              │
+│  │  reject  │   │  predicates  │   │  filter    │              │
+│  │  unsup-  │   │  as post-    │   │  _meta in  │              │
+│  │  ported) │   │  filters)    │   │  SELECT *) │              │
+│  └──────────┘   └──────────────┘   └──────┬─────┘              │
+│                                           │                    │
+│                    CR-09: UseNumber in executor too             │
+│                    CR-13: View prefix in WatchAll filter        │
+└─────────────────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│                     Transport Layer                               │
+│  ┌────────────────────┐   ┌────────────────┐                    │
+│  │ NATS Request-Reply │   │ HTTP Server    │                    │
+│  │ (CR-19: check      │   │ (CR-06: port   │                    │
+│  │  Flush error,      │   │  from config;  │                    │
+│  │  log Respond error)│   │  CR-18: proper │                    │
+│  └────────────────────┘   │  body drain,   │                    │
+│                           │  MaxBytesError)│                    │
+│                           └────────────────┘                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ CLI (cmd/natsql)                                         │   │
+│  │ CR-14: Stream creation respects source_subject           │   │
+│  │        No mutation of external streams without flag       │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
-
-The engine is unaware of the transport. All three callers:
-
-```go
-// NATS handler
-nc.Subscribe("natsql.query", func(msg *nats.Msg) {
-    result := engine.Execute(ctx, string(msg.Data))
-    msg.Respond(result.ToJSON())
-})
-
-// HTTP handler
-http.HandleFunc("POST /query", func(w http.ResponseWriter, r *http.Request) {
-    body, _ := io.ReadAll(r.Body)
-    result := engine.Execute(ctx, string(body))
-    json.NewEncoder(w).Encode(result)
-})
-
-// In-process caller
-result, err := engine.Execute(ctx, "SELECT * FROM users WHERE age = 30")
-```
-
-### 6.2 NATS Protocol
-
-```
-Subject:    natsql.query
-Request:    "SELECT id, name FROM users WHERE age = 30 LIMIT 10"
-Response:   JSON bytes of Result struct
-
-Inbox-based request-reply (standard NATS pattern).
-The requester gets exactly one response (or timeout).
-
-Optional: support subject-per-view for routing:
-  natsql.query.users  →  query scoped to "users" view
-```
-
-### 6.3 HTTP Protocol
-
-```
-POST /api/v1/query
-Content-Type: application/json
-
-{"query": "SELECT id, name FROM users WHERE age = 30 LIMIT 10"}
-
-Response 200:
-{
-    "columns": ["id", "name"],
-    "rows": [
-        {"id": "abc123", "name": "Alice"},
-        {"id": "def456", "name": "Bob"}
-    ],
-    "elapsed_ms": 4.2
-}
-```
-
-### 6.4 Why This Works
-
-The engine is pure data transformation: `(ctx, sql_string) → (columns, rows)`. Transport is just an envelope. This design:
-- Eliminates code duplication
-- Makes the engine testable without NATS or HTTP
-- Allows embedders to use their own transport (WebSocket, gRPC, Unix socket)
-- Makes it trivial to add new transports later
 
 ---
 
-## 7. Embedding vs Standalone
+## 2. Component-by-Component Changes
 
-### 7.1 Two Deployment Modes
+### 2.1 Materializer (`internal/materialize/`)
+
+#### 2.1.1 CR-01: Remove Concurrent Worker Pool — Restore Ordered Processing
+
+**Current state:** `materializer.go:20` defines `materializerWorkers = 16`. The bridge goroutine feeds a channel from the consumer Messages() call. 16 worker goroutines drain that channel concurrently, calling `processEvent`. This destroys JetStream's per-subject ordering guarantee — two events for the same PK can be processed out of order.
+
+**New architecture:** Process messages sequentially in the bridge goroutine itself. No worker pool, no shared channel.
 
 ```
-┌──────────────────────────────────────────────────┐
-│  Standalone binary (cmd/natsql/)                  │
-│                                                   │
-│  ┌──────────┐   ┌────────────┐   ┌─────────────┐ │
-│  │ Config   │──▶│ Materialize│──▶│ Serve NATS  │ │
-│  │ Loader   │   │ + Query    │   │ + HTTP      │ │
-│  └──────────┘   └────────────┘   └─────────────┘ │
-└──────────────────────────────────────────────────┘
+Before (broken ordering):
+  consumer.Messages().Next()
+    → msgCh (buffered channel, 64)
+      → 16 worker goroutines (concurrent processEvent)
+        → kv.Put (last-writer-wins by goroutine scheduling)
 
-┌──────────────────────────────────────────────────┐
-│  Embedded library (import "github.com/.../natsql") │
-│                                                   │
-│  User's Go app:                                   │
-│  ┌──────────┐   ┌──────────┐                     │
-│  │ My App   │──▶│ natsql   │                     │
-│  │ Logic    │   │ Engine   │                     │
-│  └──────────┘   │          │                     │
-│                 │ Execute()│                     │
-│                 └──────────┘                     │
-└──────────────────────────────────────────────────┘
+After (ordered):
+  consumer.Messages().Next()
+    → processEvent (sequential, in same goroutine)
+      → kv.Put (ordered, per-key stream order preserved)
 ```
 
-### 7.2 Library Interface
+**Implementation sketch:**
 
 ```go
-package natsql
-
-// Config defines a materialized view.
-type Config struct {
-    Views []ViewConfig `yaml:"views"`
+// In materializer.Run — replace the worker pool with direct sequential processing:
+for msg := range msgCh {
+    eventCount.Add(1)
+    processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
 }
-
-// ViewConfig defines one materialized view.
-type ViewConfig struct {
-    Name        string   `yaml:"name"`
-    SourceStream string `yaml:"source_stream"`
-    Columns     []ColumnConfig `yaml:"columns"`
-    Indexes     []IndexConfig `yaml:"indexes,omitempty"`
-}
-
-// Engine is the top-level object. It owns the materializer and query engine.
-type Engine struct {
-    // unexported fields
-}
-
-// New creates a new engine from a NATS JetStream connection and config.
-func New(js jetstream.JetStream, cfg *Config, opts ...Option) (*Engine, error)
-
-// Views returns registered view schemas.
-func (e *Engine) Views() map[string]*ViewSchema
-
-// Execute runs a read-only SQL query against the materialized state.
-func (e *Engine) Execute(ctx context.Context, query string) (*Result, error)
-
-// Start begins consuming all configured streams.
-// Blocks until ctx is cancelled. Idempotent.
-func (e *Engine) Start(ctx context.Context) error
-
-// Close stops all consumers and releases resources.
-func (e *Engine) Close() error
 ```
 
-### 7.3 Options Pattern
+That's it — remove the `workerWg` block and `for i := 0; i < materializerWorkers; i++` loop entirely. Process messages in the receive loop.
+
+**Impact analysis:**
+- **Throughput**: Single-goroutine processing is slower than 16 concurrent workers for independent events. However, JetStream's pull consumer with `MaxAckPending` provides backpressure — we're bound by KV write latency, not CPU.
+- **Correctness**: Stream order is preserved. Two updates to the same PK are always applied in the order they were published. **This is the correctness requirement.**
+- **Latency**: Sequential processing means one slow event blocks subsequent events. Mitigation: add per-event timeout context in `processEvent` (e.g., 5s per event) so a stuck KV write doesn't block indefinitely.
+- **Future optimization**: If throughput is insufficient, partition the source stream by subject and create one sequential consumer per partition. Each partition still processes sequentially; different partitions are independent.
+
+**Integration points:** Remove `materializerWorkers` constant, `workerWg`, worker goroutine loop, and `sem` pattern. The bridge goroutine and drain support remain unchanged.
+
+#### 2.1.2 CR-10: Error Classification in processEvent
+
+**Current state:** `processEvent` treats every writer error the same — publish to DLQ, ack the original message. This permanently loses data on transient failures.
+
+**New architecture:** Classify errors into three categories:
 
 ```go
-type Options struct {
-    Replicas     int           // KV bucket + consumer replicas (default: 1)
-    KVBucketName string        // override default "natsql-views"
-    Logger       *slog.Logger
-}
-
-type Option func(*Options)
+// Sentinel errors for writer/processEvent
+var (
+    // ErrMalformedEvent — event data cannot be parsed. DLQ + Ack.
+    // Already exists, usage unchanged.
+    
+    // ErrTransientFailure — temporary infrastructure issue. NAK + no DLQ.
+    // The message will be redelivered by JetStream.
+    ErrTransientFailure = fmt.Errorf("transient failure")
+    
+    // ErrTerminalWriteFailure — unrecoverable write error. DLQ + Ack.
+    // Event cannot ever be processed.
+    ErrTerminalWriteFailure = fmt.Errorf("terminal write failure")
+)
 ```
 
-### 7.4 Standalone Binary
+**Error routing in processEvent:**
 
-```go
-// cmd/natsql/main.go
-func main() {
-    cfg := loadConfig()
-    nc, _ := nats.Connect(cfg.NATS.URL)
-    js, _ := jetstream.New(nc)
-
-    engine, _ := natsql.New(js, cfg)
-
-    // Start materializers in background
-    go engine.Start(ctx)
-
-    // Start HTTP server (optional)
-    if cfg.HTTP.Enabled {
-        http.HandleFunc("/query", func(w, r) {
-            result := engine.Execute(ctx, r.FormValue("query"))
-            json.NewEncoder(w).Encode(result)
-        })
-        http.ListenAndServe(cfg.HTTP.Addr, nil)
-    }
-
-    // Register NATS query handler (always enabled)
-    nc.Subscribe("natsql.query", func(msg *nats.Msg) {
-        result := engine.Execute(ctx, string(msg.Data))
-        msg.Respond(result.ToJSON())
-    })
-
-    <-ctx.Done()
-}
-```
-
-### 7.5 Key Design Principle
-
-The `Engine` struct IS the component boundary. Everything else is internal:
-
-```
-natsql/
-├── engine.go         → public API: New(), Execute(), Start(), Close()
-├── config.go         → Config, ViewConfig, ColumnConfig
-├── materialize/      → internal: consumer, mapper, KV writer
-│   ├── consumer.go
-│   ├── mapper.go
-│   └── writer.go
-├── query/            → internal: parser, planner, executor
-│   ├── parser.go
-│   ├── planner.go
-│   └── executor.go
-├── kv/               → internal: KV helper (key encoding, batch ops)
-│   └── kv.go
-└── cmd/
-    └── natsql/       → standalone binary entrypoint
-        └── main.go
-```
-
-The package layout follows Go best practices: public API surface is minimal (one struct, three core methods), all implementation detail is internal. Embedders use `natsql.New(js, config).Execute(ctx, "SELECT ...")`.
-
----
-
-## 8. Recovery and Rebuild
-
-### 8.1 Normal Recovery (Crash Restart)
-
-```
-1. Process starts
-2. Load config
-3. Open KV bucket (CreateOrUpdateKeyValue — idempotent)
-4. For each view:
-   a. Create durable consumer with the same name as before
-      → NATS JetStream resumes from last ack
-   b. Start consuming events
-   c. For each un-acked event: map → KV write → ack
-5. KV bucket contains the snapshot as of the last ack
-```
-
-**Recovery is automatic.** The durable consumer name is deterministic (`natsql-{view}`). On restart, NATS resumes delivery from the last acknowledged sequence. The materializer replays the few un-acked events and catches up.
-
-**No explicit "recovery mode" needed** — the consumer's `DeliverNew` policy means it only processes new messages. The KV bucket is always consistent with the consumer's ack point.
-
-### 8.2 Full Rebuild (Schema Change, Corruption, First Deploy)
-
-```
-1. Delete the durable consumer (js.DeleteConsumer)
-2. Purge the KV bucket keys for this view
-3. Recreate consumer with DeliverAll
-4. Replay all events from the beginning of the stream
-5. For each event: map → KV write → ack
-```
+| Error Source | Error Type | Action |
+|-------------|------------|--------|
+| `mapper.MapRow()` returns `ErrMalformedEvent` | Malformed | DLQ + Ack |
+| `mapper.MapRow()` returns other error | Malformed | DLQ + Ack |
+| `writer.Apply()` returns context cancellation | Transient | NAK (redeliver on restart) |
+| `writer.Apply()` returns NATS connection error | Transient | NAK with backoff |
+| `writer.Apply()` returns KV timeout | Transient | NAK with backoff |
+| `writer.Apply()` returns key validation error | Terminal | DLQ + Ack |
+| `publishToDLQ()` fails | Transient | NAK (original msg not acked) |
 
 **Implementation:**
 
 ```go
-func (e *Engine) RebuildView(ctx context.Context, viewName string) error {
-    view := e.views[viewName]
-
-    // 1. Delete consumer to reset state
-    stream, _ := e.js.Stream(ctx, view.SourceStream)
-    stream.DeleteConsumer(ctx, "natsql-"+viewName)
-
-    // 2. Delete all KV keys for this view
-    keys, _ := e.kv.ListKeys(ctx)
-    for k := range keys.Keys() {
-        if strings.HasPrefix(k, viewName+"/") {
-            e.kv.Delete(ctx, k)
+func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, logger *slog.Logger) {
+    // ... existing mapper error handling (ErrMalformedEvent → DLQ + Ack) ...
+    
+    if mut != nil {
+        if writeErr := writer.Apply(ctx, mut); writeErr != nil {
+            if ctx.Err() != nil {
+                msg.Nak()  // context cancelled → redeliver
+                return
+            }
+            
+            if isTransientError(writeErr) {
+                logger.Warn("transient write failure, nacking", "seq", getMsgSeq(msg), "error", writeErr)
+                msg.Nak()  // redeliver — may succeed next time
+                return
+            }
+            
+            // Terminal error: DLQ + Ack
+            if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
+                logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
+                msg.Nak()
+            } else {
+                msg.Ack()
+            }
+            logger.Error("terminal write failure, sent to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
+            return
         }
     }
-
-    // 3. Recreate consumer starting from beginning
-    cons, _ := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-        Durable:      "natsql-" + viewName,
-        AckPolicy:    jetstream.AckExplicitPolicy,
-        DeliverPolicy: jetstream.DeliverAllPolicy,
-        FilterSubject: view.FilterSubject,
-    })
-
-    // 4. Replay
-    for msg := range cons.Messages().Messages() {
-        mut, err := view.Mapper.MapRow(msg)
-        if err == nil && mut != nil {
-            view.Writer.Apply(ctx, mut)
-        }
-        msg.Ack()
-    }
-
-    return nil
+    
+    msg.Ack()
 }
 ```
 
-**Rebuild is O(N)** where N = number of events in the stream. For large streams, this takes time. In v1, rebuild is an offline operation (the view is unavailable during rebuild).
+**Integration points:** New `isTransientError()` helper in `materializer.go`. No changes to `Writer.Apply` signature — classification happens at the caller level.
 
-**Future optimization**: Rebuild from the source stream PLUS the current KV snapshot (replay only events newer than the snapshot). This turns a full rebuild into an incremental catch-up.
+#### 2.1.3 CR-11: Remove InactiveThreshold from Durable Consumers
 
-### 8.3 Graceful Degradation on Malformed Events
+**Current state:** `consumer.go:53` sets `InactiveThreshold: 1 * time.Hour`. If the engine is down longer than an hour, NATS deletes the durable consumer. On restart, the consumer is recreated with `DeliverAllPolicy`, replaying the entire stream.
 
-The materializer MUST NOT crash or halt on a single bad event. The policy:
+**Fix:** Remove `InactiveThreshold` from durable consumer config entirely. Durable consumers should persist until explicitly deleted.
 
 ```go
-// ErrMalformedEvent signals that an event cannot be processed
-// but should not block the stream.
-var ErrMalformedEvent = errors.New("malformed event")
+// Before:
+consumerCfg := jetstream.ConsumerConfig{
+    Durable:           ConsumerName(viewName),
+    AckPolicy:         jetstream.AckExplicitPolicy,
+    DeliverPolicy:     jetstream.DeliverAllPolicy,
+    MaxDeliver:        maxDeliver,
+    AckWait:           time.Duration(ackWaitSeconds) * time.Second,
+    MaxAckPending:     batchSize * 2,
+    InactiveThreshold: 1 * time.Hour,  // ← REMOVE
+}
 
-// In the mapper:
-func (m *StaticMapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
-    var raw map[string]any
-    if err := json.Unmarshal(msg.Data(), &raw); err != nil {
-        return nil, fmt.Errorf("%w: %v", ErrMalformedEvent, err)
+// After:
+consumerCfg := jetstream.ConsumerConfig{
+    Durable:       ConsumerName(viewName),
+    AckPolicy:     jetstream.AckExplicitPolicy,
+    DeliverPolicy: jetstream.DeliverAllPolicy,
+    MaxDeliver:    maxDeliver,
+    AckWait:       time.Duration(ackWaitSeconds) * time.Second,
+    MaxAckPending: batchSize * 2,
+    // No InactiveThreshold — durable consumers live until deleted
+}
+```
+
+**Integration points:** Single line removal in `consumer.go:53`. Update any tests that assert InactiveThreshold.
+
+#### 2.1.4 CR-12: Rename BatchSize or Document Actual Behavior
+
+**Current state:** `ConsumerConfig.BatchSize` influences `MaxAckPending = batchSize * 2` but does NOT control fetch batch size (the consumer uses `Messages()` → repeated `Next()`). The name implies batch fetching behavior that doesn't exist.
+
+**Fix:** Rename the config field to `MaxAckPending` to reflect its actual behavior, or add a `FetchBatchSize` if batch fetching is implemented. For v1.2 scope: rename the field.
+
+```go
+type ConsumerConfig struct {
+    MaxAckPending int `yaml:"max_ack_pending,omitempty" json:"max_ack_pending,omitempty"`
+    MaxDeliver     int `yaml:"max_deliver,omitempty" json:"max_deliver,omitempty"`
+    AckWaitSeconds int `yaml:"ack_wait_seconds,omitempty" json:"ack_wait_seconds,omitempty"`
+}
+```
+
+**Integration points:** Config struct in `internal/cfg/config.go`, consumer setup in `internal/materialize/consumer.go`, all test fixtures that reference `BatchSize`.
+
+#### 2.1.5 CR-14: Stream Creation Respects Source Subject
+
+**Current state:** `cmd/natsql/main.go:135-137` creates/updates source streams with `Subjects: []string{v.SourceStream + ".>"}`, ignoring the configured `source_subject`. In external NATS mode, this mutates existing streams unexpectedly.
+
+**Fix:** Three changes:
+1. Only create streams in embedded mode (the engine owns them)
+2. In external mode, warn if stream doesn't exist and let the consumer setup fail naturally
+3. Add `--create-streams` flag for explicit opt-in
+
+```go
+// In runServer():
+// Only auto-create streams in embedded mode
+if cfg.NATS.Embedded {
+    createSourceStreams(ctx, js, cfg.Views, logger)
+} else {
+    // In external mode: just log a warning if streams don't exist
+    // Consumer setup will fail with a clear error
+    for _, v := range cfg.Views {
+        if _, err := js.Stream(ctx, v.SourceStream); err != nil {
+            logger.Warn("source stream not found (consumer setup will fail)", 
+                "stream", v.SourceStream, "view", v.Name)
+        }
     }
+}
+```
+
+And when creating streams, respect `source_subject`:
+
+```go
+func createSourceStreams(ctx context.Context, js jetstream.JetStream, views []natsqlpkg.ViewConfig, logger *slog.Logger) {
+    seen := map[string][]string{} // stream → subjects
+    for _, v := range views {
+        subj := v.SourceSubject
+        if subj == "" {
+            subj = v.SourceStream + ".>"
+        }
+        seen[v.SourceStream] = append(seen[v.SourceStream], subj)
+    }
+    for stream, subjects := range seen {
+        cfg := jetstream.StreamConfig{
+            Name:     stream,
+            Subjects: subjects,
+        }
+        if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
+            logger.Warn("failed to create source stream", "stream", stream, "error", err)
+        }
+    }
+}
+```
+
+**Integration points:** CLI (`cmd/natsql/main.go`), new helper function. No changes to engine or materializer packages.
+
+---
+
+### 2.2 Canonical PK Encoding (`internal/kv/`, `internal/materialize/`, `internal/query/`)
+
+#### 2.2.1 CR-02: Single Canonical PK Encoder
+
+**Current state:** PK encoding is duplicated across three paths, creating inconsistency:
+
+```
+Write path:
+  Mapper: stringifyValue(val) → SanitizePK(s) → join with separator → pk string
+    → Writer: kv.PkKey(viewName, pk) → SanitizePK(pk) ← DOUBLE SANITIZE!
+
+Read path (query):
+  Planner: fmt.Sprint(value) join with separator → pkValue string
+    → Executor: kv.PkKey(viewName, pkValue) → SanitizePK(pkValue) ← SANITIZED ONCE
+```
+
+The result: rows with PK values containing `_`, `|`, `/`, `*`, `>` are stored under a double-sanitized key on write but single-sanitized key on read.
+
+**New architecture:** One function, called exactly once, used by all paths.
+
+```go
+// In internal/kv/kv.go — NEW canonical PK encoder:
+
+// BuildPkKey constructs the full KV key for a row.
+// Takes raw PK component values, joins them with the separator, sanitizes once,
+// and returns the full key path.
+// This is the SINGLE canonical function for PK key construction.
+// Both materializer and query engine MUST use this.
+func BuildPkKey(viewName string, pkParts []string, separator string) string {
+    // 1. Join parts with separator (unsanitized)
+    pk := strings.Join(pkParts, separator)
+    
+    // 2. Sanitize exactly once
+    sanitized := SanitizePK(pk)
+    
+    // 3. Build full key
+    return viewName + "/pk/" + sanitized
+}
+```
+
+**Changes required by component:**
+
+| Component | Current | New |
+|-----------|---------|-----|
+| `mapper.go:214-234` | `stringifyValue(val)` calls `SanitizePK` | Return raw string (no SanitizePK) |
+| `mapper.go:105` | `pk := strings.Join(pkParts, separator)` | Return raw pk string, pass to writer |
+| `RowMutation.PK` | string, already sanitized | string, raw (unsanitized) |
+| `writer.go:48` | `kv.PkKey(w.viewName, mut.PK)` — double sanitizes | `kv.BuildPkKey(w.viewName, parts, sep)` — single call |
+| `planner.go:30-38` | `fmt.Sprint(value)` then join | Use same string representation as mapper (without SanitizePK) |
+| `executor.go:22` | `kv.PkKey(p.ViewName, p.PkValue)` | `kv.BuildPkKey(p.ViewName, p.PkValue, sep)` — but PkValue is already joined |
+
+The key insight: `RowMutation.PK` changes from "already sanitized and joined" to "raw joined parts, not sanitized". The Writer is the single point that calls `BuildPkKey` which handles sanitization.
+
+For the query path, the planner produces a `PkValue` string that is the raw-joined PK parts (same as what the mapper produces). The executor then calls `BuildPkKey` (which sanitizes) instead of `PkKey` (which also sanitizes but takes a different input format).
+
+**Migration:**
+1. Add `BuildPkKey` to `kv.go` (new function)
+2. Remove `SanitizePK` call from `stringifyValue` in `mapper.go`
+3. Change `Writer.Apply` to use `BuildPkKey(viewName, rawParts, separator)` instead of `PkKey(viewName, mut.PK)`
+4. Change `PKLookupPlan.Execute` to use `BuildPkKey(viewName, pkValue, separator)` instead of `PkKey(viewName, pkValue)`
+5. Keep `PkKey` as deprecated wrapper for backward compat or remove it
+
+**Integration boundary:** The `RowMutation.PK` field changes semantics from "sanitized PK key suffix" to "raw joined PK parts". All consumers of `mut.PK` must be audited.
+
+---
+
+### 2.3 Query Engine (`internal/query/`)
+
+#### 2.3.1 CR-03: Keep All Predicates as Post-Filters
+
+**Current state:** `planner.go:40-46` removes conditions whose column appears in the PK condition map, even if they contradict the PK equality or are duplicate equalities on the same column.
+
+**Fix:** Keep ALL original WHERE conditions as post-filters. Build the PK lookup key from matching equality conditions, but still apply those same conditions as post-filters.
+
+```go
+func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
+    // ... existing PK detection ...
+
+    if len(pkConditions) == len(schema.KeyFields) && len(schema.KeyFields) > 0 {
+        pkValues := make([]string, len(schema.KeyFields))
+        for i, kf := range schema.KeyFields {
+            pkValues[i] = fmt.Sprint(pkConditions[kf].Value)
+        }
+        // ... build pkValue from pkValues ...
+
+        // CR-03 FIX: Keep ALL conditions as post-filters, including PK conditions.
+        // This handles:
+        //   WHERE id = 'u1' AND id != 'u1'  →  PK lookup u1, post-filter rejects
+        //   WHERE id = 'u1' AND id = 'u2'  →  PK lookup u2 (last wins), post-filter rejects
+        return &PKLookupPlan{
+            ViewName: q.From,
+            PkValue:  pkValue,
+            Columns:  q.Select,
+            Where:    q.Where,  // ALL original conditions
+        }, nil
+    }
+
+    // Full scan: also pass all conditions
+    return &FullScanPlan{
+        ViewName: q.From,
+        Columns:  q.Select,
+        Where:    q.Where,
+        Limit:    q.Limit,
+    }, nil
+}
+```
+
+**Additionally — empty result optimization:** Optionally detect contradictory equality predicates on the same PK column and return an empty plan immediately:
+
+```go
+// Short-circuit for contradictory PK equalities
+for _, kf := range schema.KeyFields {
+    eqValues := make(map[string]bool)
+    for _, c := range q.Where {
+        if c.Column == kf && c.Op == OpEq {
+            val := fmt.Sprint(c.Value)
+            if len(eqValues) > 0 && !eqValues[val] {
+                // Contradictory equalities on same PK column → empty result
+                return &EmptyPlan{}, nil
+            }
+            eqValues[val] = true
+        }
+    }
+}
+```
+
+**Integration points:** Only `planner.go`. No changes to executor, parser, or types.
+
+#### 2.3.2 CR-04: SELECT * Filters _meta Fields
+
+**Current state:** `executor.go:145-148` — when `columns == nil` (SELECT *), `projectRow` returns the full row map including `_meta`.
+
+**Fix:** Strip `_meta` from results when doing `SELECT *`. Pass schema column names into the plan, or filter known internal prefixes.
+
+```go
+func projectRow(row map[string]any, columns []string) []string {
+    // The schema columns for this view
+    if columns == nil {
+        // CR-04: SELECT * excludes internal fields
+        // Known internal prefixes: "_meta"
+        projected := make(map[string]any, len(row))
+        for k, v := range row {
+            if strings.HasPrefix(k, "_") {
+                continue  // skip internal fields
+            }
+            projected[k] = v
+        }
+        return projected
+    }
+    // ... existing projection logic ...
+}
+```
+
+**Alternative (preferred):** Store schema column names in the plan itself, so `SELECT *` can project exactly the known columns instead of guessing which keys are "internal":
+
+```go
+type PKLookupPlan struct {
+    ViewName   string
+    PkValue    string
+    Columns    []string    // nil = all schema columns
+    SchemaCols []string    // always populated — all column names from schema
+    Where      []Condition
+}
+
+func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+    // ... fetch row ...
+    
+    // Determine projection
+    cols := p.Columns
+    if cols == nil {
+        cols = p.SchemaCols  // SELECT * = all schema columns, no internal fields
+    }
+    return []map[string]any{projectRow(row, cols)}, nil
+}
+```
+
+**Integration points:** 
+- Add `SchemaCols` field to `PKLookupPlan` and `FullScanPlan`
+- Populate from schema in `BuildPlan`
+- Update `projectRow` — when `columns` is explicitly provided (non-nil), use as-is; `SELECT *` now passes schema column names instead of nil
+
+#### 2.3.3 CR-05: Reject Unsupported SQL Constructs
+
+**Current state:** `parser.go:47-50` silently ignores non-column select expressions. No validation for DISTINCT, ORDER BY, GROUP BY, HAVING, etc.
+
+**Fix:** Explicitly check and reject unsupported constructs:
+
+```go
+func Parse(sql string) (*ValidatedQuery, error) {
+    // ... existing parsing ...
+    
+    sel, ok := stmt.(*sqlparser.Select)
+    if !ok {
+        return nil, errors.New("only SELECT statements are supported")
+    }
+    
+    // CR-05: Reject unsupported clauses
+    if sel.Distinct != "" {
+        return nil, errors.New("DISTINCT is not supported in v1")
+    }
+    if sel.OrderBy != nil {
+        return nil, errors.New("ORDER BY is not supported in v1")
+    }
+    if sel.GroupBy != nil {
+        return nil, errors.New("GROUP BY is not supported in v1")
+    }
+    if sel.Having != nil {
+        return nil, errors.New("HAVING is not supported in v1")
+    }
+    
+    // ... extract SelectExprs with validation ...
+}
+```
+
+And in `extractSelectExprs`, return an error for non-column expressions instead of ignoring them:
+
+```go
+func extractSelectExprs(exprs sqlparser.SelectExprs) ([]string, error) {
+    // ... single * check ...
+    
+    cols := make([]string, 0, len(exprs))
+    for _, expr := range exprs {
+        switch e := expr.(type) {
+        case *sqlparser.AliasedExpr:
+            col, ok := e.Expr.(*sqlparser.ColName)
+            if !ok {
+                return nil, fmt.Errorf("unsupported SELECT expression: %T (only simple column references and * are supported in v1)", e.Expr)
+            }
+            cols = append(cols, col.Name.String())
+        case *sqlparser.StarExpr:
+            cols = append(cols, "*")
+        default:
+            return nil, fmt.Errorf("unsupported SELECT expression type: %T", e)
+        }
+    }
+    return cols, nil
+}
+```
+
+**Integration points:** `parser.go` only. Changes to `extractSelectExprs` return signature (adds error).
+
+#### 2.3.4 CR-09: Consistent UseNumber in Executor
+
+**Current state:** `executor.go:32` uses `json.Unmarshal` which converts all numbers to `float64`. Large integers >2^53 lose precision. The mapper uses `json.Decoder.UseNumber()` which preserves exact precision.
+
+**Fix:** Use `json.Decoder.UseNumber()` in the executor too, and update `valuesEqual` to handle `json.Number`:
+
+```go
+// In executor.go, PK lookup:
+var row map[string]any
+decoder := json.NewDecoder(bytes.NewReader(entry.Value()))
+decoder.UseNumber()
+if err := decoder.Decode(&row); err != nil {
+    return nil, fmt.Errorf("unmarshaling row: %w", err)
+}
+
+// In full scan:
+var fullRow map[string]any
+decoder := json.NewDecoder(bytes.NewReader(data))
+decoder.UseNumber()
+if uerr := decoder.Decode(&fullRow); uerr != nil { ... }
+```
+
+**`valuesEqual` update:** Add `json.Number` comparison before the `float64`/`int64` normalization:
+
+```go
+func valuesEqual(a, b any) bool {
+    // ... nil check ...
+    
+    // CR-09: Handle json.Number (exact precision)
+    an, aIsNum := a.(json.Number)
+    bn, bIsNum := b.(json.Number)
+    if aIsNum && bIsNum {
+        return an.String() == bn.String()  // exact string comparison
+    }
+    if aIsNum {
+        // Convert json.Number to float64 for comparison with float64 values
+        af, err := an.Float64()
+        if err != nil { return false }
+        a = af
+    }
+    if bIsNum {
+        bf, err := bn.Float64()
+        if err != nil { return false }
+        b = bf
+    }
+    
+    // ... rest of existing comparison logic ...
+}
+```
+
+**Integration points:** `executor.go` — both PK lookup path and full scan path. `valuesEqual` function.
+
+#### 2.3.5 CR-13: View-Prefix Filtered Full Scans
+
+**Current state:** `executor.go:49-51` uses `WatchAll` to scan the entire shared KV bucket, then filters by `p.ViewName + "/pk/"` prefix on every key. For N views, a full scan on one view pays O(all keys across all views).
+
+**Fix:** Pass the view prefix into the watcher. While NATS KV `WatchAll` doesn't support server-side prefix filtering natively, we can reduce the client-side filtering cost by:
+
+1. Using the view prefix early in the filter to skip non-matching keys with minimal overhead
+2. Documenting the cross-view cost
+3. Optionally: using a dedicated view key prefix that separates views more cleanly
+
+The current approach (`strings.HasPrefix`) is already reasonably efficient for this — the real fix is documentation and a TODO for per-view buckets.
+
+```go
+// CR-13: Add view filtering documentation and prefix check
+const pkPrefix = "/pk/"  // shared constant
+
+func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+    prefix := p.ViewName + pkPrefix  // e.g., "users/pk/"
+    
+    watcher, err := kvb.WatchAll(ctx)
     // ...
+    
+    for entry := range watcher.Updates() {
+        if entry == nil { break }
+        if !strings.HasPrefix(entry.Key(), prefix) {
+            continue  // skip keys from other views or meta keys
+        }
+        // ...
+    }
+}
+```
+
+**Medium-term fix (not in v1.2 scope):** Per-view KV buckets. Each view gets its own bucket `natsql-views-{name}`, so `WatchAll` on one bucket only scans that view's data. This is a breaking change requiring config migration.
+
+---
+
+### 2.4 Engine Lifecycle (`internal/engine/`)
+
+#### 2.4.1 CR-07: Synchronous Startup with Error Propagation
+
+**Current state:** `engine.go:254-256` launches materializer in goroutine, errors are logged. `engine.go:288-295` starts HTTP server in goroutine, bind errors are logged. `engine.go:269-270` logs NATS registration errors without failing.
+
+**Fix:**
+
+**a) HTTP server bind before goroutine:**
+```go
+// Synchronous bind
+listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
+if err != nil {
+    return fmt.Errorf("HTTP listen failed: %w", err)
 }
 
-// In the processing loop:
-mut, err := mapper.MapRow(msg)
-if errors.Is(err, ErrMalformedEvent) {
-    msg.Ack()                   // skip it
-    log.Warn("skipped", "seq", seq, "err", err)
-    continue
+// Then serve in goroutine
+e.wg.Add(1)
+go func(l net.Listener, logger *slog.Logger) {
+    defer e.wg.Done()
+    logger.Info("HTTP query server starting", "addr", l.Addr())
+    if err := httpServer.Serve(l); err != nil && err != http.ErrServerClosed {
+        logger.Error("HTTP server error", "error", err)
+    }
+}(listener, e.logger)
+```
+
+**b) Materializer error propagation:**
+Add a startup error channel:
+
+```go
+// Launch materializers with error channel
+type materializerResult struct {
+    viewName string
+    err      error
+}
+
+startupErrCh := make(chan materializerResult, len(e.cfg.Views))
+
+for i := range e.cfg.Views {
+    vc := e.cfg.Views[i]
+    drainCh := make(chan struct{})
+    drainChans[i] = drainCh
+    
+    // Store schema synchronously (already is)
+    schema := vc.BuildSchema()
+    if storeErr := kv.StoreSchema(ctx, kvb, vc.Name, schema); storeErr != nil {
+        logger.Warn("failed to store schema", "view", vc.Name, "error", storeErr)
+    }
+    
+    e.wg.Add(1)
+    go func(viewCfg natsqlpkg.ViewConfig, dc chan struct{}) {
+        defer e.wg.Done()
+        if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, dlqStream, e.logger, dc); runErr != nil {
+            if !errors.Is(runErr, context.Canceled) {
+                logger.Error("materializer exited with error", "view", viewCfg.Name, "error", runErr)
+            }
+        }
+    }(vc, drainCh)
+    
+    // Note: Materializer.Run blocks on consumer setup first, which is synchronous.
+    // If consumer setup fails, it returns an error immediately.
+    // The goroutine captures this error and we can propagate it via the channel.
+}
+```
+
+Note: The materializer's `Run` function already returns consumer setup errors synchronously before entering the message loop. The goroutine wrapper captures these. For v1.2, we add an initial health check — wait briefly for all materializers to confirm they're alive (consumer setup succeeded), then proceed. This is a **best-effort** check because the materializer runs forever if setup succeeds.
+
+**c) NATS handler failure should be fatal (or at least logged at ERROR level with clear message):**
+```go
+// CR-07: NATS handler failure is a hard error
+sub, err := transport.RegisterNATSHandler(e.nc, e)
+if err != nil {
+    logger.Error("failed to register NATS query handler — queries via NATS will not work",
+        "error", err)
+    // Decision: do NOT fail Start for NATS handler. Log prominently.
+    // Rationale: user may only use HTTP queries.
+}
+```
+
+**Integration points:** `engine.go` — startup sequence, HTTP listener, materializer goroutine.
+
+#### 2.4.2 CR-06: HTTP Port from Config
+
+**Current state:** `engine.go` defaults `queryPort` to `8080`. CLI sets `cfg.HTTP.Port`. No connection between them.
+
+**Fix:** Pass `natsql.WithQueryPort(cfg.HTTP.Port)` when constructing the engine, or have the engine constructor read `cfg.HTTP.Port`:
+
+```go
+// Option A: In New/NewEmbedded, initialize queryPort from cfg
+func New(nc *nats.Conn, js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
+    // ... existing validation ...
+    e := &Engine{
+        js:        js,
+        nc:        nc,
+        cfg:       cfg,
+        logger:    slog.Default(),
+        queryPort: cfg.HTTP.Port,  // ← from config, not hardcoded 8080
+    }
+    if e.queryPort == 0 {
+        e.queryPort = 8080  // fallback default
+    }
+    // ... apply opts ...
+}
+```
+
+**Option A is preferred** — it's simpler and doesn't require changes at every call site.
+
+**Integration points:** `engine.go` — constructor functions.
+
+---
+
+### 2.5 Config Validation (`internal/cfg/`)
+
+#### 2.5.1 CR-08: Cross-Validation of key_fields and primary_key
+
+**Current state:** `config.go:156-187` validates key_fields and primary_key separately but never cross-references them.
+
+**Fix:** Add validation that checks:
+1. Every `key_field` references an existing column that has `primary_key=true`
+2. Every column with `primary_key=true` appears in `key_fields`
+3. Column names within a view are unique
+4. Key field names within a view are unique
+
+```go
+func (cfg *Config) Validate() error {
+    var errs []string
+    
+    for i, v := range cfg.Views {
+        prefix := fmt.Sprintf("views[%d]", i)
+        
+        // ... existing checks ...
+        
+        // CR-08: Cross-validate key_fields and primary_key columns
+        colNames := make(map[string]bool)
+        pkColNames := make(map[string]bool)
+        
+        for _, c := range v.Columns {
+            if colNames[c.Name] {
+                errs = append(errs, fmt.Sprintf("%s: duplicate column name %q", prefix, c.Name))
+            }
+            colNames[c.Name] = true
+            if c.PrimaryKey {
+                pkColNames[c.Name] = true
+            }
+        }
+        
+        // Every key_field must name an existing primary_key column
+        for _, kf := range v.KeyFields {
+            if !pkColNames[kf] {
+                errs = append(errs, fmt.Sprintf("%s: key_field %q does not reference a column with primary_key=true", prefix, kf))
+            }
+        }
+        
+        // Every primary_key column must be in key_fields
+        for pkName := range pkColNames {
+            found := false
+            for _, kf := range v.KeyFields {
+                if kf == pkName {
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                errs = append(errs, fmt.Sprintf("%s: column %q has primary_key=true but is not listed in key_fields", prefix, pkName))
+            }
+        }
+    }
+    
+    // ... return errors ...
+}
+```
+
+**Integration points:** `config.go:Validate()`. Update existing tests that don't have consistent key_fields/primary_key.
+
+---
+
+### 2.6 Transport Layer (`internal/transport/`)
+
+#### 2.6.1 CR-18: HTTP Body Drain and Error Handling
+
+**Current state:** `http.go:40-41` drains body after decode but doesn't check for trailing data. Error detection for oversized body uses fragile string comparison.
+
+**Fix:**
+
+```go
+// After first decode, check for trailing data
+decoder := json.NewDecoder(r.Body)
+if err := decoder.Decode(&req); err != nil {
+    w.Header().Set("Content-Type", "application/json")
+    var maxErr *http.MaxBytesError
+    if errors.As(err, &maxErr) {
+        w.WriteHeader(http.StatusRequestEntityTooLarge)
+        w.Write([]byte(`{"results":[],"error":"request body too large"}`))
+        return
+    }
+    w.WriteHeader(http.StatusBadRequest)
+    w.Write([]byte(`{"results":[],"error":"invalid JSON body"}`))
+    return
+}
+
+// Verify no trailing data after first JSON value
+if decoder.More() {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusBadRequest)
+    w.Write([]byte(`{"results":[],"error":"unexpected trailing data after JSON body"}`))
+    return
+}
+```
+
+#### 2.6.2 CR-19: NATS Handler Error Handling
+
+**Current state:** `nats.go:41` ignores `nc.Flush()` error. `nats.go:36` ignores `msg.Respond()` error.
+
+**Fix:**
+
+```go
+func RegisterNATSHandler(nc *nats.Conn, handler QueryHandler) (*nats.Subscription, error) {
+    sub, err := nc.Subscribe("natsql.query", func(msg *nats.Msg) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        sql := string(msg.Data)
+        result := handler.Query(ctx, sql)
+        data, marshalErr := json.Marshal(result)
+        if marshalErr != nil {
+            errResp := fmt.Sprintf(`{"results":[],"error":"internal error: %s"}`, marshalErr.Error())
+            if respondErr := msg.Respond([]byte(errResp)); respondErr != nil {
+                slog.Default().Warn("NATS response failed", "error", respondErr)
+            }
+            return
+        }
+        if respondErr := msg.Respond(data); respondErr != nil {
+            slog.Default().Warn("NATS response failed", "error", respondErr)
+        }
+    })
+    if err != nil {
+        return nil, fmt.Errorf("subscribing to natsql.query: %w", err)
+    }
+    if err := nc.Flush(); err != nil {
+        return nil, fmt.Errorf("flushing NATS subscription: %w", err)
+    }
+    return sub, nil
 }
 ```
 
 ---
 
-## 9. Data Flow Paths (End-to-End)
+### 2.7 CLI (`cmd/natsql/main.go`)
 
-### 9.1 Write Path (Stream → KV)
+Changes for CR-06 (already covered in §2.4.2) and CR-14 (covered in §2.1.5).
 
-```
-Producer
-  │  publishes JSON event to JetStream subject
-  ▼
-JetStream Source Stream (e.g., "orders")
-  │  durably stored, replicated
-  ▼
-Durable Pull Consumer ("natsql-orders")
-  │  ordered, at-least-once delivery
-  ▼
-Row Mapper (config-defined JSON field → column mapping)
-  │  extracts id, customer_id, total, items
-  ▼
-KV Writer
-  │  1. kv.Put("orders/pk/ORDER-123", rowJSON)
-  │  2. kv.Put("orders/idx/status/pending/ORDER-123", "")
-  │  3. kv.Put("orders/idx/customer_id/CUST-456/ORDER-123", "")
-  ▼
-Ack message (only after all KV writes succeed)
-```
+---
 
-### 9.2 Read Path (SQL → Response)
+## 3. Data Flow Changes
+
+### 3.1 Write Path (Before CR Fixes)
 
 ```
-Client (NATS request / HTTP / Go code)
-  │  "SELECT id, total FROM orders WHERE customer_id = 'CUST-456'"
-  ▼
-SQL Parser
-  │  AST: Select{Columns: [id, total], From: orders, Where: Eq(customer_id, "CUST-456")}
-  ▼
-Validator
-  │  Checks: view "orders" exists, columns exist, type match
-  ▼
-Plan Builder
-  │  Index plan: customer_id is indexed → IndexEqLookup
-  ▼
-KV Executor
-  │  1. kv.ListKeys("orders/idx/customer_id/CUST-456/") → [".../ORDER-123"]
-  │  2. kv.Get("orders/pk/ORDER-123") → {"id":"ORDER-123",...}
-  │  3. Filter: (no additional conditions)
-  │  4. Limit: (no LIMIT clause → return all)
-  ▼
-Result
-  │  Columns: [id, total]
-  │  Rows: [[ORDER-123, 42.50]]
-  ▼
-Transport Encoder (JSON response for HTTP/NATS)
+Event → Consumer → msgCh(64) → 16 workers → processEvent
+  → mapper.MapRow (stringifyValue + SanitizePK + join)
+  → Writer.Apply (PkKey = view/pk/SanitizePK(already_sanitized))
+  → kv.Put → Ack or DLQ (all errors treated same)
 ```
 
-### 9.3 Rebuild Path (Stream Replay → KV)
+### 3.2 Write Path (After CR Fixes)
 
 ```
-Operator triggers rebuild
-  ▼
-Delete consumer + purge view keys
-  ▼
-Create consumer with DeliverAll
-  ▼
-For each event in stream (oldest to newest):
-  Map event → KV upsert → ack
-  ▼
-View is queryable again (consistent at end of replay)
+Event → Consumer → processEvent (sequential, ordered)
+  → mapper.MapRow (stringifyValue WITHOUT SanitizePK, raw join)
+  → Writer.Apply (BuildPkKey = sanitize once)
+  → kv.Put
+  → [if transient] NAK with backoff
+  → [if malformed] DLQ + Ack
+  → [if terminal] DLQ + Ack
+  → [if success] Ack
+```
+
+### 3.3 Read Path (Before CR Fixes)
+
+```
+SQL → Parser (silently ignores unsupported constructs)
+  → Planner (PK conditions removed from post-filter)
+  → PKLookupPlan: PkKey(view, joined) — different encoding from write!
+  → Executor: json.Unmarshal (float64 precision loss)
+  → projectRow (SELECT * returns _meta)
+```
+
+### 3.4 Read Path (After CR Fixes)
+
+```
+SQL → Parser (rejects unsupported constructs with error)
+  → Planner (ALL conditions kept as post-filters; contradiction detection)
+  → PKLookupPlan: BuildPkKey(view, pkParts, sep) — same as write!
+  → Executor: json.Decoder.UseNumber (exact precision)
+  → projectRow (SELECT * = schema columns only, no _meta)
 ```
 
 ---
 
-## 10. Scalability Considerations
-
-| Concern | v1 Approach | Future (v2/v3) |
-|---------|------------|----------------|
-| **Large streams** (>1M events) | Sequential replay; O(N) on first materialize | Parallel shards per subject prefix; incremental catch-up |
-| **Large KV buckets** (>100K keys) | `ListKeys` returns all keys; filter client-side | Per-view buckets; server-side prefix filtering when NATS adds it |
-| **High event throughput** (>1K/s) | Single consumer, single-threaded | Shard source stream by subject; one materializer per shard |
-| **Query concurrency** | Per-request stateless; scales horizontally | Connection pooling; prepared statement cache |
-| **Range scans on non-indexed columns** | Full table scan (slow) | Warn in docs; require index for range queries |
-| **KV value size** | 64KB max per row (NATS limit) | Split large rows; use Object Store for blobs |
-
-**NATS KV `ListKeys` limitation**: `ListKeys` returns ALL keys in the bucket with no prefix filter. For a bucket with millions of keys, this is a blocking O(N) operation. Mitigation:
-- Use narrow key prefixes (`{view}/idx/{col}/{val}/`) to bound the list
-- Accept that full table scans are expensive
-- Consider per-view buckets if `ListKeys` becomes a bottleneck
-
----
-
-## 11. Build Order (Roadmap Implications)
-
-The architecture implies a strict dependency order for implementation:
+## 4. Build Order and Dependencies
 
 ```
-Phase 1: Foundation (no SQL yet)
-  ├── Config loader (YAML/JSON → Config struct)
-  ├── KV helper package (key encoding utilities)
-  ├── Durable consumer setup (create/resume consumer)
-  ├── Event→Row mapper (config-driven, JSON extraction)
-  ├── KV Writer (PK upsert + index update)
-  └── Manual integration test (publish → verify KV state)
+Wave 1: Foundation (no behavioral change)
+  ├── CR-08: Config validation (self-contained, pure function changes)
+  ├── CR-02: Canonical PK encoder (refactoring, no behavior change if correct)
+  └── CR-05: Reject unsupported SQL (parser validation, self-contained)
+  
+Wave 2: Materializer (requires Wave 1 CR-02)
+  ├── CR-01: Remove worker pool (behavioral: fixes ordering)
+  ├── CR-10: Error classification (behavioral: fixes transient handling)
+  ├── CR-11: Remove InactiveThreshold (behavioral: fixes durability)
+  └── CR-12: Rename BatchSize (interface: rename config field)
 
-Phase 2: Minimal SQL (SELECT with PK lookup)
-  ├── SQL parser (minimal hand-written)
-  ├── Validator (view + column resolution)
-  ├── Plan builder (PK lookup only)
-  ├── Executor (single kv.Get)
-  └── NATS request-reply handler
+Wave 3: Query Engine (requires Wave 1 CR-02, CR-05)
+  ├── CR-03: Keep all predicates (behavioral: fixes query correctness)
+  ├── CR-04: SELECT * filters _meta (behavioral: fixes metadata leak)
+  ├── CR-09: UseNumber in executor (behavioral: fixes precision loss)
+  └── CR-13: View prefix scan (behavioral: scan scoping)
 
-Phase 3: Indexes + WHERE
-  ├── Index entry creation in materializer
-  ├── IndexEqLookup plan
-  ├── IndexRangeScan plan
-  ├── FullScan plan (fallback)
-  ├── Limit support
-  └── HTTP/JSON API handler
+Wave 4: Engine Lifecycle (no hard dependencies on Waves 2-3)
+  ├── CR-07: Synchronous startup with errors
+  └── CR-06: HTTP port from config
 
-Phase 4: Embedding + Server
-  ├── Engine public API cleanup
-  ├── Options pattern
-  ├── Standalone binary (cmd/natsql)
-  ├── Graceful shutdown
-  └── Documentation + examples
+Wave 5: Transport + CLI (no hard dependencies)
+  ├── CR-14: Stream creation respects subjects
+  ├── CR-18: HTTP body handling
+  └── CR-19: NATS handler error handling
 
-Phase 5: Operational Hardening
-  ├── Full rebuild (purge + replay)
-  ├── Malformed event handling
-  ├── Logging + metrics
-  ├── Integration test suite
-  └── Performance benchmarks
+Wave 6: Cleanup (low/medium findings)
+  CR-15 through CR-25 — formatting, dead code, docs, tests
 ```
 
-**Key dependencies:**
-- Phase 1 must precede everything else (no state without materializer)
-- Phase 2 depends on Phase 1 (no queries without state)
-- Phase 3 depends on Phase 2 (query engine skeleton needed before adding index plans)
-- Phase 4 depends on Phase 3 (useful server needs indexes)
-- Phase 5 can start alongside Phase 3 (rebuild, logging are independent)
+### Build Order Rationale
+
+1. **Wave 1 first** because CR-02 (canonical PK) is a refactoring that both materializer and query engine depend on. CR-08 (config validation) is CI-gate level — should be early to catch bad configs. CR-05 (reject unsupported SQL) is parser-level and self-contained.
+
+2. **Wave 2 next** because CR-01 (ordered processing) is the most critical correctness fix. It changes the materializer's core processing loop, which affects all subsequent materializer changes.
+
+3. **Wave 3 after Wave 1** because CR-02 (canonical PK) changes the query path's PK encoding. CR-03 (predicates) and CR-04 (SELECT *) are planner/executor changes.
+
+4. **Wave 4 can parallelize with Waves 2-3** because engine lifecycle changes (startup errors, HTTP port) are orthogonal to materializer and query engine internals.
+
+5. **Wave 5 can parallelize with all above** because transport and CLI changes are isolated to their own packages.
+
+6. **Wave 6 last** because it includes formatting, dead code removal, and docs — should be done after behavioral changes are complete.
 
 ---
 
-## 12. Sources and References
+## 5. New Component Boundaries
 
-| Source | What | Confidence |
-|--------|------|------------|
+No new components are introduced. The following existing components gain new responsibilities:
 
-| NATS JetStream docs | Consumer types, KV store capabilities, CAS semantics | HIGH (docs.nats.io) |
-| Materialize architecture blog | pTVC abstraction, incremental computation, adapter/storage/compute split | MEDIUM (architecture inspiration, overkill for v1) |
-| go-mysql-server ARCHITECTURE.md | SQL pipeline: parse → analyze (resolve+optimize) → execute | HIGH (pattern adapted for v1) |
-| xwb1989/sqlparser | MySQL-dialect SQL parser in Go | MEDIUM (fallback option; hand-written parser preferred for v1) |
+| Component | New Responsibility | Why Here |
+|-----------|-------------------|----------|
+| `internal/kv/kv.go` | `BuildPkKey()` — single canonical PK encoder | Centralizes key construction; all paths call it |
+| `internal/materialize/materializer.go` | `isTransientError()` — error classification | Writer errors must be classified before action |
+| `internal/query/planner.go` | `EmptyPlan` — short-circuit for impossible queries | Planner detects contradictions before execution |
+| `internal/engine/engine.go` | `net.Listen` before HTTP Serve | Synchronous bind for error propagation |
+
+### New Types
+
+```go
+// internal/query/types.go
+// EmptyPlan is a plan that returns zero rows immediately.
+// Used for contradictory predicates (CR-03) or other short-circuits.
+type EmptyPlan struct{}
+
+func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+    return []map[string]any{}, nil
+}
+```
+
+### Removed Types/Constants
+
+| Symbol | Reason |
+|--------|--------|
+| `materializerWorkers` (16) | CR-01: sequential processing |
+| `SchemaPrefix` ("schemas:") | CR-22: dead code |
+| `ErrSkipAndAck` | CR-22: unused sentinel |
+| `EncodePKValue` (panics on `/`) | CR-22: replaced by `BuildPkKey` |
+| `MustInitBucket` | CR-22: test-only, production uses `InitBucket` |
+| `ConsumerConfig.BatchSize` | CR-12: renamed to `MaxAckPending` |
 
 ---
 
-*Generated for natsql project roadmap. Last updated: 2026-05-23.*
+## 6. Configuration Changes
+
+### Updated Config Schema (CR-08, CR-12)
+
+```yaml
+views:
+  - name: users
+    source_stream: users_events
+    source_subject: users.>          # respected in stream creation (CR-14)
+    key_fields: [id]                 # must match primary_key columns (CR-08)
+    key_separator: "|"
+    columns:
+      - name: id
+        from: id
+        type: string
+        primary_key: true
+    consumer:
+      max_ack_pending: 50            # renamed from batch_size (CR-12)
+      max_deliver: 10
+      ack_wait_seconds: 30
+```
+
+---
+
+## 7. Cleanup Changes (Medium/Low Findings)
+
+### CR-15: $.field prefix support
+Either support `$.` prefix stripping in `extractNestedField` or remove from test examples. **Recommendation:** strip `$.` prefix in extractNestedField so both `$.user.id` and `user.id` work.
+
+### CR-16: Index config is ignored
+Reject `indexes` at validation time with clear error until secondary indexes are implemented.
+
+### CR-17: Delete/tombstone semantics
+Deferred to v2. Keep as recognized gap.
+
+### CR-18: HTTP body handling
+Covered in §2.6.1.
+
+### CR-19: NATS handler errors
+Covered in §2.6.2.
+
+### CR-20: Error message typo ("marshaling" → "unmarshaling")
+Single-line fix in `executor.go:33`.
+
+### CR-21: Example errors
+Audit all examples for unchecked errors and lifecycle ownership issues.
+
+### CR-22: Dead code
+Remove `SchemaPrefix`, `ErrSkipAndAck`, `EncodePKValue`, `MustInitBucket`, unused `dlqStream` param.
+
+### CR-23: Formatting drift
+`gofmt -w` across repo. Add `gofmt` check to CI.
+
+### CR-24: Duplicated test helpers
+Extract common test helpers (embedded NATS startup, stream creation, test data setup) into a shared test utility.
+
+### CR-25: Docs sync
+Update README and feature docs to reflect implemented LIMIT semantics.
+
+---
+
+## 8. Integration Points Summary
+
+| Fix | Files Modified | New Dependencies | Risk |
+|-----|---------------|------------------|------|
+| CR-01 | `materializer.go` | None | **HIGH** — core processing loop change |
+| CR-02 | `kv.go`, `mapper.go`, `writer.go`, `planner.go`, `executor.go` | None | **HIGH** — affects all PK operations |
+| CR-03 | `planner.go` | None | MEDIUM — changes predicate handling logic |
+| CR-04 | `types.go`, `planner.go`, `executor.go` | None | LOW — projection filtering |
+| CR-05 | `parser.go` | None | LOW — validation only |
+| CR-06 | `engine.go` | None | LOW — config plumbing |
+| CR-07 | `engine.go` | None | MEDIUM — startup sequence change |
+| CR-08 | `config.go` | None | LOW — validation logic |
+| CR-09 | `executor.go` | None | LOW — JSON decoder change |
+| CR-10 | `materializer.go` | None | MEDIUM — error classification |
+| CR-11 | `consumer.go` | None | LOW — config field removal |
+| CR-12 | `config.go`, `consumer.go` | None | LOW — rename |
+| CR-13 | `executor.go` | None | LOW — prefix filtering |
+| CR-14 | `cmd/natsql/main.go` | None | LOW — CLI change |
+| CR-15 | `mapper.go` | None | LOW — path stripping |
+| CR-16 | `config.go` | None | LOW — validation |
+| CR-18 | `http.go` | None | LOW — error handling |
+| CR-19 | `nats.go` | None | LOW — error checking |
+| CR-20 | `executor.go` | None | LOW — string change |
+| CR-22 | `kv.go`, `mapper.go`, `materializer.go`, `engine.go` | None | LOW — deletion |
+
+**Total risk assessment:** 2 HIGH, 4 MEDIUM, 15 LOW. The two HIGH-risk changes are CR-01 (removing worker pool) and CR-02 (canonical PK encoder). Both can be validated with integration tests before proceeding.
+
+---
+
+## 9. Key Architecture Decisions Summary
+
+| Decision | Rationale | Alternative Considered |
+|----------|-----------|----------------------|
+| Sequential processing (no worker pool) | Preserves stream ordering; correctness over throughput | Per-key partitioning — more complex, not justified for v1 |
+| Single canonical `BuildPkKey` function | Eliminates double-sanitization bug; single source of truth | Keep both paths but sync them — fragile |
+| ALL predicates as post-filters | Correctness; handles contradictory and duplicate equalities | Short-circuit detection only — misses post-filter cases |
+| `net.Listen` before `Serve` for HTTP | Synchronous error propagation; prevents "started but not serving" state | Startup timeout — racy, less predictable |
+| Error classification at caller level | Writer stays simple; classification logic is caller policy | Add error types to Writer — would work but adds coupling |
+| No per-view KV buckets for v1.2 | Minimal change; cross-view scan cost is documented | Per-view buckets — breaking change, scope for v2 |
+| Rename BatchSize to MaxAckPending | Reflects actual behavior; no implementation change needed | Implement Fetch() batching — scope increase |
+
+---
+
+*Architecture remediation research for: natsql v1.2 Code Review Fixes*
+*Researched: 2026-05-31*
+*Based on: cr.md findings, source code audit, v1.1 architecture patterns*

@@ -45,7 +45,7 @@ var (
 // processing, and Close to shut down.
 type Engine struct {
 	js         jetstream.JetStream
-	nc         *nats.Conn           // NATS connection for subscription
+	nc         *nats.Conn // NATS connection for subscription
 	cfg        *natsqlpkg.Config
 	kv         jetstream.KeyValue
 	logger     *slog.Logger
@@ -53,11 +53,11 @@ type Engine struct {
 	cancel     context.CancelFunc
 	started    bool
 	mu         sync.Mutex
-	natsSub    *nats.Subscription   // NATS query subscription (for cleanup)
-	httpServer *http.Server         // HTTP query server
-	queryPort  int                  // HTTP server port (default 8080)
-	embedNode  *embed.Node          // non-nil when using embedded NATS (NewEmbedded)
-	drainChans []chan struct{} // per-view drain signals for graceful consumer shutdown
+	natsSub    *nats.Subscription // NATS query subscription (for cleanup)
+	httpServer *http.Server       // HTTP query server
+	queryPort  int                // HTTP server port (default 8080)
+	embedNode  *embed.Node        // non-nil when using embedded NATS (NewEmbedded)
+	drainChans []chan struct{}    // per-view drain signals for graceful consumer shutdown
 }
 
 // Option configures the Engine.
@@ -94,9 +94,11 @@ func WithHTTPServer(addr string) Option {
 }
 
 // WithQueryPort directly sets the HTTP query server port.
+// A port of 0 lets the OS choose a free random port, which avoids port
+// conflicts when multiple engines run concurrently (e.g. in parallel tests).
 func WithQueryPort(port int) Option {
 	return func(e *Engine) {
-		if port > 0 {
+		if port >= 0 {
 			e.queryPort = port
 		}
 	}
@@ -135,7 +137,10 @@ func New(nc *nats.Conn, js jetstream.JetStream, cfg *natsqlpkg.Config, opts ...O
 		nc:        nc,
 		cfg:       cfg,
 		logger:    slog.Default(),
-		queryPort: 8080,
+		queryPort: cfg.HTTP.Port,
+	}
+	if e.queryPort == 0 {
+		e.queryPort = 8080 // fallback default (D-13)
 	}
 
 	for _, opt := range opts {
@@ -191,8 +196,11 @@ func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 		nc:        nc,
 		cfg:       cfg,
 		logger:    slog.Default(),
-		queryPort: 8080,
+		queryPort: cfg.HTTP.Port,
 		embedNode: node,
+	}
+	if e.queryPort == 0 {
+		e.queryPort = 8080 // fallback default (D-13)
 	}
 
 	for _, opt := range opts {
@@ -229,8 +237,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	// 2. Create DLQ stream
-	dlqStream, err := materialize.EnsureDLQStream(ctx, e.js)
-	if err != nil {
+	if _, err := materialize.EnsureDLQStream(ctx, e.js); err != nil {
 		return fmt.Errorf("creating DLQ stream: %w", err)
 	}
 
@@ -239,6 +246,13 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// 4. Create drain channels and launch materializers
 	drainChans := make([]chan struct{}, len(e.cfg.Views))
+
+	// Startup error channel for materializer consumer setup (D-15, CR-07)
+	type matResult struct {
+		name string
+		err  error
+	}
+	startupCh := make(chan matResult, len(e.cfg.Views))
 
 	for i := range e.cfg.Views {
 		vc := e.cfg.Views[i]
@@ -253,9 +267,10 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.wg.Add(1)
 		go func(viewCfg natsqlpkg.ViewConfig, dc chan struct{}) {
 			defer e.wg.Done()
-			if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, dlqStream, e.logger, dc); runErr != nil {
+			if runErr := materialize.Run(ctx, e.js, &viewCfg, kvb, e.logger, dc); runErr != nil {
 				if !errors.Is(runErr, context.Canceled) {
 					e.logger.Error("materializer exited with error", "view", viewCfg.Name, "error", runErr)
+					startupCh <- matResult{name: viewCfg.Name, err: runErr}
 				}
 			}
 		}(vc, drainCh)
@@ -263,22 +278,47 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Info("started materializer", "view", vc.Name, "source_stream", vc.SourceStream)
 	}
 
-	// 5. Register NATS query handler (if NATS connection is available)
+	// Wait briefly for materializers to pass consumer setup (D-15, CR-07)
+	// Run() returns error immediately if consumer setup fails.
+	// If setup succeeds, it blocks forever in the message loop.
+	// NOTE: time.After channel fires once; we use a labeled loop and break
+	// on timeout to avoid blocking on subsequent iterations.
+	afterStartup := time.After(500 * time.Millisecond)
+	var startupErrors int
+startupLoop:
+	for range len(e.cfg.Views) {
+		select {
+		case result := <-startupCh:
+			startupErrors++
+			e.logger.Error("materializer startup failed", "view", result.name, "error", result.err)
+		case <-afterStartup:
+			break startupLoop
+		}
+	}
+	if startupErrors > 0 {
+		return fmt.Errorf("%d materializer(s) failed to start", startupErrors)
+	}
+
+	// 5. Register NATS query handler (if NATS connection is available — D-14 fatal)
 	if e.nc != nil {
 		sub, err := transport.RegisterNATSHandler(e.nc, e)
 		if err != nil {
-			e.logger.Error("failed to register NATS query handler", "error", err)
-		} else {
-			e.natsSub = sub
-			e.logger.Info("NATS query handler registered", "subject", "natsql.query")
+			return fmt.Errorf("failed to register NATS query handler: %w", err)
 		}
+		e.natsSub = sub
+		e.logger.Info("NATS query handler registered", "subject", "natsql.query")
 	}
 
-	// 6. Start HTTP query server (bound to localhost per T-02-06)
+	// 6. Start HTTP query server — bind synchronously, serve in goroutine (per D-15, CR-06/CR-07)
 	router := transport.NewRouter()
 	transport.RegisterHTTPHandler(router, e)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
+	if err != nil {
+		return fmt.Errorf("HTTP listen failed on port %d: %w", e.queryPort, err)
+	}
+
 	httpServer := &http.Server{
-		Addr:         fmt.Sprintf("127.0.0.1:%d", e.queryPort),
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -286,13 +326,13 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 	e.httpServer = httpServer
 	e.wg.Add(1)
-	go func(srv *http.Server, logger *slog.Logger) {
+	go func(l net.Listener, srv *http.Server, logger *slog.Logger) {
 		defer e.wg.Done()
-		logger.Info("HTTP query server starting", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Info("HTTP query server starting", "addr", l.Addr())
+		if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 			logger.Error("HTTP server error", "error", err)
 		}
-	}(httpServer, e.logger)
+	}(listener, httpServer, e.logger)
 
 	// All initialization succeeded — set engine state
 	e.kv = kvb
@@ -436,11 +476,10 @@ func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 
 // Stats holds operational metrics for the Engine (D-60).
 type Stats struct {
-	Started     bool   `json:"started"`
-	Goroutines  int    `json:"goroutines"`
-	Views       int    `json:"views"`
-	HTTPServing bool   `json:"http_serving"`
-	LastError   string `json:"last_error,omitempty"`
+	Started     bool `json:"started"`
+	Goroutines  int  `json:"goroutines"`
+	Views       int  `json:"views"`
+	HTTPServing bool `json:"http_serving"`
 }
 
 // NC returns the NATS connection used by the engine.

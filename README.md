@@ -1,5 +1,17 @@
 # NATSQL — The NATS-Native Materialized View Engine
 
+[![Lint](https://github.com/gacopys/natsql/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/lint.yml)
+[![Vulnerability](https://github.com/gacopys/natsql/actions/workflows/vulnerability.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/vulnerability.yml)
+[![Build](https://github.com/gacopys/natsql/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/build.yml)
+[![Test](https://github.com/gacopys/natsql/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/test.yml)
+[![Examples](https://github.com/gacopys/natsql/actions/workflows/examples.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/examples.yml)
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/gacopys/natsql)](https://goreportcard.com/report/github.com/gacopys/natsql)
+[![License](https://img.shields.io/github/license/gacopys/natsql)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/gacopys/natsql)](go.mod)
+[![Latest tag](https://img.shields.io/github/v/tag/gacopys/natsql)](https://github.com/gacopys/natsql/tags)
+[![GitHub stars](https://img.shields.io/github/stars/gacopys/natsql?style=social)](https://github.com/gacopys/natsql)
+
 **Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.**
 
 ```
@@ -82,7 +94,14 @@ res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'abc123'")
 | Full scan queries (non-PK WHERE) | **Shipped** |
 | Range scans (`>`, `<`) | Planned |
 | Secondary indexes | Planned |
-| LIMIT support | Planned |
+| LIMIT support | **Shipped** |
+| `.` / `$.` prefix notation in field paths | **Shipped** |
+
+### Known Limitations
+
+- **Delete/Tombstone semantics:** Rows cannot be deleted from the materialized view once written. This is a deliberate v1 omission — a delete mode (operation field, subject convention, or tombstone predicate) is planned for v2. See `internal/kv/kv.go` package docs for details.
+- **Range scans:** `WHERE` with `>` or `<` operators performs a client-side filter over a full table scan. Dedicated index-backed range scans are planned for v2.
+- **Secondary indexes:** Only primary-key columns are indexed. Queries on non-PK columns perform a full table scan.
 
 ---
 

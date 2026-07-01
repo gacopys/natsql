@@ -52,11 +52,16 @@ func main() {
 	defer eng.Close()
 
 	// Create stream before starting engine
-	js, _ := jetstream.New(eng.NC())
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	js, err := jetstream.New(eng.NC())
+	if err != nil {
+		log.Fatalf("JetStream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "orders-stream",
 		Subjects: []string{"orders.>"},
-	})
+	}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
 
 	if err := eng.Start(ctx); err != nil {
 		log.Fatalf("Start: %v", err)
@@ -70,7 +75,9 @@ func main() {
 		`{"org": {"id": "globex"}, "order": {"id": "ord-3", "total": 15.00, "status": "shipped"}, "customer": {"name": "Carol"}}`,
 	}
 	for _, e := range events {
-		js.Publish(ctx, "orders.created", []byte(e))
+		if _, err := js.Publish(ctx, "orders.created", []byte(e)); err != nil {
+			log.Fatalf("Publish: %v", err)
+		}
 		fmt.Println("  Published:", e)
 	}
 
