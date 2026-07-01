@@ -286,6 +286,19 @@ Hands-on examples in `examples/` — each is a standalone Go program:
 | 04 | [multiple-views](examples/04-multiple-views) | Two views, cross-view isolation |
 | 05 | [library-embed](examples/05-library-embed) | Embedding in Go apps (`New` / `NewWithNATS`) |
 | 06 | [cli-server](examples/06-cli-server) | Standalone binary with config file |
+| 07 | [perf-benchmark](examples/07-perf-benchmark) | High-throughput pub/sub, query latency benchmarks |
+| 08 | [where-operators](examples/08-where-operators) | `WHERE IN`, `WHERE !=`, full table scan |
+| 09 | [key-separator](examples/09-key-separator) | Custom `key_separator`, PK sanitization |
+| 10 | [source-subject](examples/10-source-subject) | `source_subject` filter, subject routing |
+| 11 | [consumer-tuning](examples/11-consumer-tuning) | `max_ack_pending`, `max_deliver`, retry config |
+| 12 | [http-options](examples/12-http-options) | `WithQueryPort`, `WithHTTPServer`, custom port |
+| 13 | [bool-timestamp](examples/13-bool-timestamp) | `boolean` and `timestamp` column types |
+| 14 | [yaml-vs-json](examples/14-yaml-vs-json) | JSON config file, dual-format `LoadConfig` |
+| 15 | [autocreate-streams](examples/15-autocreate-streams) | `--create-streams` flag, stream existence |
+| 16 | [poll-for-ready](examples/16-poll-for-ready) | Polling for materialization, `LIMIT` |
+| 17 | [dual-engine](examples/17-dual-engine) | Two independent engines in one process |
+| 18 | [nats-request](examples/18-nats-request) | Pure NATS request-reply, no HTTP |
+| 19 | [custom-logger](examples/19-custom-logger) | `slog` structured logging, `WithLogger` |
 
 ```bash
 cd examples/01-hello-natsql && go run .
