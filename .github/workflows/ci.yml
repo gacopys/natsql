@@ -17,33 +17,19 @@ jobs:
           go-version-file: go.mod
 
       - name: Format check
-        run: |
-          if [ "$(gofmt -l . | wc -l)" -ne 0 ]; then
-            echo "Unformatted Go source files:"
-            gofmt -l .
-            exit 1
-          fi
+        run: make format-check
 
       - name: Build
-        run: go build ./...
+        run: make build
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
 
       - name: Test + coverage
-        run: |
-          go test -race -count=1 -coverprofile=coverage.out -v ./... 2>&1
-          echo ""
-          echo "━━━ Coverage per function ━━━"
-          go tool cover -func=coverage.out
+        run: make test
+
+      - name: Coverage report
+        run: make coverage
 
       - name: Build examples
-        run: |
-          for dir in examples/*/; do
-            if [ -f "$dir/go.mod" ]; then
-              echo "Building $dir..."
-              (cd "$dir" && go build .)
-            else
-              echo "Skipping $dir (no go.mod)"
-            fi
-          done
+        run: make examples
