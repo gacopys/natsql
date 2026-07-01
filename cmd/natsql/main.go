@@ -48,7 +48,7 @@ Three deployment modes (D-51):
   natsql server --config=config.yaml -u nats://host:4222  Explicit NATS URL
 
 CLI flags override config file values (D-52).`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // cobra convention: cmd is unused
 		return runServer()
 	},
 }

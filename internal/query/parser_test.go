@@ -495,7 +495,7 @@ func TestParse_NonAliasedFrom(t *testing.T) {
 // literalToGo unit tests
 // ---------------------------------------------------------------------------
 
-func TestLiteralToGo_IntParseError(t *testing.T) {
+func TestLiteralToGo_IntParseError(_ *testing.T) {
 	// A very large int literal that ParseInt can't handle falls back to the raw value
 	_ = literalToGo(&sqlparser.Literal{Type: sqlparser.IntVal, Val: "999999999999999999999999"})
 }

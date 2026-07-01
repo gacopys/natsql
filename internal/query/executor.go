@@ -205,9 +205,7 @@ func filterRow(row map[string]any, conditions []Condition) bool {
 	return true
 }
 
-// convertJSONNumber converts a json.Number to int64 or float64
-// for comparison with WHERE clause literal values.
-// json.Number with no decimal point → int64; with decimal → float64.
+// Json.Number with no decimal point → int64; with decimal → float64.
 func convertJSONNumber(n json.Number) any {
 	s := n.String()
 	if !strings.Contains(s, ".") {

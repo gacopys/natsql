@@ -973,7 +973,7 @@ type fakeJS struct {
 	publishErr    error
 }
 
-func (f *fakeJS) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+func (f *fakeJS) Publish(_ context.Context, _ string, _ []byte, _ ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	f.publishCalled = true
 	return &jetstream.PubAck{}, f.publishErr
 }
@@ -985,7 +985,7 @@ type fakeKV struct {
 	putCalled bool
 }
 
-func (f *fakeKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+func (f *fakeKV) Put(_ context.Context, _ string, _ []byte) (uint64, error) {
 	f.putCalled = true
 	return 0, f.putErr
 }
@@ -1006,14 +1006,14 @@ func (m *fakeMsg) Nak() error   { m.nakked = true; return nil }
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}}, nil
 }
-func (m *fakeMsg) Headers() nats.Header                   { return nil }
-func (m *fakeMsg) Subject() string                        { return "" }
-func (m *fakeMsg) Reply() string                          { return "" }
-func (m *fakeMsg) DoubleAck(ctx context.Context) error    { return nil }
-func (m *fakeMsg) NakWithDelay(delay time.Duration) error { return nil }
-func (m *fakeMsg) InProgress() error                      { return nil }
-func (m *fakeMsg) Term() error                            { return nil }
-func (m *fakeMsg) TermWithReason(reason string) error     { return nil }
+func (m *fakeMsg) Headers() nats.Header               { return nil }
+func (m *fakeMsg) Subject() string                    { return "" }
+func (m *fakeMsg) Reply() string                      { return "" }
+func (m *fakeMsg) DoubleAck(_ context.Context) error  { return nil }
+func (m *fakeMsg) NakWithDelay(_ time.Duration) error { return nil }
+func (m *fakeMsg) InProgress() error                  { return nil }
+func (m *fakeMsg) Term() error                        { return nil }
+func (m *fakeMsg) TermWithReason(_ string) error      { return nil }
 
 func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal string) {
 	t.Helper()

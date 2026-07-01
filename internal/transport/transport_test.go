@@ -25,7 +25,7 @@ type mockHandler struct {
 	result *query.QueryResult
 }
 
-func (m *mockHandler) Query(_ context.Context, sql string) *query.QueryResult {
+func (m *mockHandler) Query(_ context.Context, _ string) *query.QueryResult {
 	return m.result
 }
 

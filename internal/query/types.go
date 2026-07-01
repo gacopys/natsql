@@ -67,11 +67,15 @@ type EmptyPlan struct {
 
 // Execute returns an empty result set with no KV I/O. Used when
 // contradictory predicates make the query impossible to satisfy.
-func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+//
+
+func (p *EmptyPlan) Execute(_ context.Context, _ jetstream.KeyValue) ([]map[string]any, error) {
 	return []map[string]any{}, nil
 }
 
 // QueryResult is the JSON response envelope per D-29.
+//
+//nolint:revive // QueryResult is the established public name; renaming to Result would stutter with query.Result
 type QueryResult struct {
 	Results []map[string]any `json:"results"`
 	Error   *string          `json:"error"`
