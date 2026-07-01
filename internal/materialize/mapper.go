@@ -21,7 +21,6 @@ var (
 	// ErrMalformedEvent indicates an event cannot be processed
 	// and should be acked + sent to DLQ. Never blocks the stream.
 	ErrMalformedEvent = fmt.Errorf("malformed event")
-
 )
 
 // RowMutation represents the result of mapping one event to a row mutation.
@@ -223,5 +222,3 @@ func stringifyValue(val any) string {
 		return fmt.Sprint(v)
 	}
 }
-
-

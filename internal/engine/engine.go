@@ -45,7 +45,7 @@ var (
 // processing, and Close to shut down.
 type Engine struct {
 	js         jetstream.JetStream
-	nc         *nats.Conn           // NATS connection for subscription
+	nc         *nats.Conn // NATS connection for subscription
 	cfg        *natsqlpkg.Config
 	kv         jetstream.KeyValue
 	logger     *slog.Logger
@@ -53,11 +53,11 @@ type Engine struct {
 	cancel     context.CancelFunc
 	started    bool
 	mu         sync.Mutex
-	natsSub    *nats.Subscription   // NATS query subscription (for cleanup)
-	httpServer *http.Server         // HTTP query server
-	queryPort  int                  // HTTP server port (default 8080)
-	embedNode  *embed.Node          // non-nil when using embedded NATS (NewEmbedded)
-	drainChans []chan struct{} // per-view drain signals for graceful consumer shutdown
+	natsSub    *nats.Subscription // NATS query subscription (for cleanup)
+	httpServer *http.Server       // HTTP query server
+	queryPort  int                // HTTP server port (default 8080)
+	embedNode  *embed.Node        // non-nil when using embedded NATS (NewEmbedded)
+	drainChans []chan struct{}    // per-view drain signals for graceful consumer shutdown
 }
 
 // Option configures the Engine.

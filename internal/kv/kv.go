@@ -141,5 +141,3 @@ func LoadSchema(ctx context.Context, kv jetstream.KeyValue, viewName string) (*V
 	}
 	return &schema, nil
 }
-
-

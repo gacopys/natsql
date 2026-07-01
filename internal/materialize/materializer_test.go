@@ -1029,11 +1029,11 @@ func (m *fakeMsg) Nak() error   { m.nakked = true; return nil }
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}}, nil
 }
-func (m *fakeMsg) Headers() nats.Header                 { return nil }
-func (m *fakeMsg) Subject() string                      { return "" }
-func (m *fakeMsg) Reply() string                        { return "" }
-func (m *fakeMsg) DoubleAck(ctx context.Context) error   { return nil }
+func (m *fakeMsg) Headers() nats.Header                   { return nil }
+func (m *fakeMsg) Subject() string                        { return "" }
+func (m *fakeMsg) Reply() string                          { return "" }
+func (m *fakeMsg) DoubleAck(ctx context.Context) error    { return nil }
 func (m *fakeMsg) NakWithDelay(delay time.Duration) error { return nil }
-func (m *fakeMsg) InProgress() error                    { return nil }
-func (m *fakeMsg) Term() error                          { return nil }
-func (m *fakeMsg) TermWithReason(reason string) error   { return nil }
+func (m *fakeMsg) InProgress() error                      { return nil }
+func (m *fakeMsg) Term() error                            { return nil }
+func (m *fakeMsg) TermWithReason(reason string) error     { return nil }

@@ -36,11 +36,11 @@ func main() {
 
 	// Start your own NATS server (or connect to existing)
 	srv, err := natsserver.NewServer(&natsserver.Options{
-		Host:     "127.0.0.1",
-		Port:     -1,
+		Host:      "127.0.0.1",
+		Port:      -1,
 		JetStream: true,
-		NoLog:    true,
-		NoSigs:   true,
+		NoLog:     true,
+		NoSigs:    true,
 	})
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
@@ -103,10 +103,6 @@ func main() {
 	b, _ := json.Marshal(res.Results)
 	fmt.Printf("  Query result: %s\n\n", b)
 
-
-
-
-	
 	// ── Option B: You have a NATS connection (convenience) ──────────
 	fmt.Println("═══ Pattern B: natsql.NewWithNATS(nc, cfg) ═══")
 	fmt.Println("Pass your NATS connection — engine handles JetStream setup.")
