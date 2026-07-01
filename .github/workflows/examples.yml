@@ -7,13 +7,23 @@ on:
     branches: [master]
 
 jobs:
-  examples:
-    name: Build examples
+  example:
+    name: ${{ matrix.example }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - 01-hello-natsql
+          - 02-composite-keys
+          - 03-malformed-events
+          - 04-multiple-views
+          - 05-library-embed
+          - 07-perf-benchmark
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: examples/01-hello-natsql/go.mod
-      - name: Build all examples
-        run: make examples
+          go-version-file: examples/${{ matrix.example }}/go.mod
+      - name: Run
+        run: go run .
+        working-directory: examples/${{ matrix.example }}
