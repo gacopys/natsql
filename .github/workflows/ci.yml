@@ -16,6 +16,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Format check
+        run: |
+          if [ "$(gofmt -l . | wc -l)" -ne 0 ]; then
+            echo "Unformatted Go source files:"
+            gofmt -l .
+            exit 1
+          fi
+
       - name: Build
         run: go build ./...
 

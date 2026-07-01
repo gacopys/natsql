@@ -9,6 +9,8 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 func TestSchemaKey(t *testing.T) {
@@ -23,9 +25,7 @@ func TestInitBucket_CreatesBucket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -49,9 +49,7 @@ func TestStoreAndLoadSchema_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -102,9 +100,7 @@ func TestLoadSchema_MissingKey_ReturnsNil(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -124,9 +120,7 @@ func TestStoreSchema_OverwriteUpdatesSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	kv, err := InitBucket(ctx, js, 1)
 	if err != nil {
@@ -223,40 +217,8 @@ func TestPkKey_BackwardCompat(t *testing.T) {
 
 func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
-
-	opts := &server.Options{
-		Port:           -1,
-		JetStream:      true,
-		StoreDir:       t.TempDir(),
-		ServerName:     "test-server",
-		NoLog:          true,
-		NoSigs:         true,
-	}
-
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("failed to start NATS server: %v", err)
-	}
-	srv.Start()
-
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready within 5 seconds")
-	}
-
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("failed to connect: %v", err)
-	}
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("failed to create JetStream context: %v", err)
-	}
-
-	return srv, nc, js
+	nc, js := testutil.StartEmbeddedNATS(t)
+	return nil, nc, js
 }
 
 func isNATSKeyNotFound(err error) bool {

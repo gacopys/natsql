@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	natsql "github.com/gacopys/natsql"
 	natsqlpkg "github.com/gacopys/natsql/internal/cfg"
 	"github.com/gacopys/natsql/internal/engine"
 	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 // TestEngineEndToEnd verifies the full write path:
@@ -28,9 +29,7 @@ func TestEngineEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	// Create source stream
 	streamName := "TEST_ENG_E2E"
@@ -138,9 +137,7 @@ func TestEngineMultipleViews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	// Create two streams
 	streamA := "TEST_ENG_MV_A"
@@ -229,9 +226,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	// Subscribe to DLQ subject to verify malformed events arrive there
 	dlqSub, err := nc.SubscribeSync("natsql.dlq")
@@ -354,9 +349,7 @@ func TestEngineRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_RESTART"
 	createStream(t, ctx, js, streamName)
@@ -439,9 +432,7 @@ func TestEngineDoubleStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_DBL"
 	createStream(t, ctx, js, streamName)
@@ -602,9 +593,7 @@ func TestEngineStats(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_STATS"
 	createStream(t, ctx, js, streamName)
@@ -682,9 +671,7 @@ func TestEngineGoroutineLeak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_ENG_LEAK"
 	createStream(t, ctx, js, streamName)
@@ -804,9 +791,7 @@ func TestEngineQueryPKLookup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -839,9 +824,7 @@ func TestEngineQueryViewNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
 	if err != nil {
@@ -864,9 +847,7 @@ func TestEngineQueryInvalidSQL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{})
 	if err != nil {
@@ -888,9 +869,7 @@ func TestEngineQueryUnknownColumn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -914,9 +893,7 @@ func TestEngineQueryConcurrent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -944,9 +921,7 @@ func TestEngineQueryBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	// Set up KV data directly (not via engine)
 	setupTestView(t, ctx, js)
@@ -976,9 +951,7 @@ func TestEngineQueryFullScan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -1006,9 +979,7 @@ func TestEngineQueryEmptyResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	setupTestView(t, ctx, js)
 
@@ -1041,9 +1012,7 @@ func TestEngineFullLifecycleViaFacade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_FACADE_LIFECYCLE"
 	createStream(t, ctx, js, streamName)
@@ -1139,9 +1108,8 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
+	natsURL := nc.ConnectedUrl()
 
 	streamName := "TEST_GRACEFUL"
 	createStream(t, ctx, js, streamName)
@@ -1200,7 +1168,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 
 	// Verify data persistence after close via a separate NATS connection
 	// (the original connection was closed by eng.Close())
-	verifyNC, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
+	verifyNC, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("failed to create verification connection: %v", err)
 	}
@@ -1234,9 +1202,7 @@ func TestEngineNCEdgeCases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_NC_EDGE"
 	createStream(t, ctx, js, streamName)
@@ -1273,9 +1239,7 @@ func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_NEW_ERR"
 	createStream(t, ctx, js, streamName)
@@ -1299,34 +1263,8 @@ func TestNew_InvalidConfig_ReturnsError(t *testing.T) {
 
 func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	opts := &server.Options{
-		Port:       -1,
-		JetStream:  true,
-		StoreDir:   t.TempDir(),
-		ServerName: "test-server",
-		NoLog:      true,
-		NoSigs:     true,
-	}
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("failed to start NATS server: %v", err)
-	}
-	srv.Start()
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready within 5 seconds")
-	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("failed to connect: %v", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("failed to create JetStream context: %v", err)
-	}
-	return srv, nc, js
+	nc, js := testutil.StartEmbeddedNATS(t)
+	return nil, nc, js
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {

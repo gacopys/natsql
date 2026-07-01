@@ -16,16 +16,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"io"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	natsql "github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 // testRow is a row in the materialized view, keyed by user_id.
@@ -149,9 +150,7 @@ func TestBlackBox_Queries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_BLACKBOX"
 	createStream(t, ctx, js, streamName)
@@ -526,9 +525,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, _, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_COMPOSITE"
 	createStream(t, ctx, js, streamName)
@@ -634,9 +631,7 @@ func TestFacade_NewWithNATS_NilConn(t *testing.T) {
 }
 
 func TestFacade_NewWithNATS_InvalidConfig(t *testing.T) {
-	srv, nc, _ := startEmbeddedNATS(t)
-	defer srv.Shutdown()
-	defer nc.Close()
+	_, nc, _ := startEmbeddedNATS(t)
 
 	// Config with view that has no name — should fail validation
 	_, err := natsql.NewWithNATS(nc, &natsql.Config{
@@ -680,34 +675,8 @@ func TestFacade_WithHTTPServer(t *testing.T) {
 
 func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	opts := &server.Options{
-		Port:       -1,
-		JetStream:  true,
-		StoreDir:   t.TempDir(),
-		ServerName: "bb-test",
-		NoLog:      true,
-		NoSigs:     true,
-	}
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("start NATS: %v", err)
-	}
-	srv.Start()
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS not ready")
-	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("connect: %v", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("JetStream: %v", err)
-	}
-	return srv, nc, js
+	nc, js := testutil.StartEmbeddedNATS(t)
+	return nil, nc, js
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {
