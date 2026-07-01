@@ -79,7 +79,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 
 		sem <- struct{}{}
 		wg.Add(1)
-		go p.processEntry(ctx, entry.Value(), &mu, &results, sem, &wg, errCh)
+		go p.processEntry(entry.Value(), &mu, &results, sem, &wg, errCh)
 	}
 
 	wg.Wait()
@@ -100,7 +100,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	return results, nil
 }
 
-func (p *FullScanPlan) processEntry(ctx context.Context, data []byte, mu *sync.Mutex, results *[]map[string]any, sem chan struct{}, wg *sync.WaitGroup, errCh chan error) {
+func (p *FullScanPlan) processEntry(data []byte, mu *sync.Mutex, results *[]map[string]any, sem chan struct{}, wg *sync.WaitGroup, errCh chan error) {
 	defer wg.Done()
 	defer func() { <-sem }()
 

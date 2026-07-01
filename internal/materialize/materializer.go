@@ -246,7 +246,7 @@ func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, w
 
 	if mut != nil {
 		if writeErr := writer.Apply(ctx, mut); writeErr != nil {
-			handleWriteError(ctx, js, writer, msg, viewCfg, writeErr, logger)
+			handleWriteError(ctx, js, msg, viewCfg, writeErr, logger)
 			return
 		}
 	}
@@ -284,7 +284,7 @@ func handleMapError(ctx context.Context, js jetstream.JetStream, msg jetstream.M
 	logger.Warn("skipped malformed event", "seq", seq, "error", mapErr)
 }
 
-func handleWriteError(ctx context.Context, js jetstream.JetStream, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, writeErr error, logger *slog.Logger) {
+func handleWriteError(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewCfg *natsql.ViewConfig, writeErr error, logger *slog.Logger) {
 	seq := getMsgSeq(msg)
 	if ctx.Err() != nil {
 		if nakErr := msg.Nak(); nakErr != nil {
