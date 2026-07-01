@@ -104,8 +104,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 10-01-PLAN.md — Query engine core fixes (post-filter all WHERE, short-circuit, UseNumber, _meta strip, Watch prefix)
-- [ ] 10-02-PLAN.md — Transport robustness (HTTP errors.As, trailing data, NATS Flush/Respond, CLI --create-streams)
+- [x] 10-01-PLAN.md — Query engine core fixes (post-filter all WHERE, short-circuit, UseNumber, _meta strip, Watch prefix)
+- [x] 10-02-PLAN.md — Transport robustness (HTTP errors.As, trailing data, NATS Flush/Respond, CLI --create-streams)
 
 ### Phase 11: Cleanup & Documentation
 
@@ -120,7 +120,12 @@ Plans:
   5. All Go source files are formatted with `gofmt -w` and CI enforces formatting via a format check step
   6. Embedded NATS setup and stream creation helpers are deduplicated across test packages
   7. README and SQL dialect documentation accurately reflect implemented features including LIMIT support
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 11-01-PLAN.md — Config & dead code: $. prefix, index validation, remove unused symbols
+- [ ] 11-02-PLAN.md — Examples & docs: error checking, README, SQL dialect, tombstone docs
+- [ ] 11-03-PLAN.md — Test helpers, gofmt formatting, CI format check
 
 ## Progress
 
@@ -135,5 +140,5 @@ Plans:
 | 7. Integration Verification | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 8. Verification & Foundation | v1.2 | 4/4 | Complete | 2026-06-01 |
 | 9. Materializer & Engine Lifecycle | v1.2 | 3/3 | Complete | 2026-06-01 |
-| 10. Query Engine & Transport | v1.2 | 0/2 | Planned | - |
+| 10. Query Engine & Transport | v1.2 | 2/2 | Complete    | 2026-06-02 |
 | 11. Cleanup & Documentation | v1.2 | 0/0 | Not started | - |
