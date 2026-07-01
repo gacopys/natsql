@@ -6,11 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/internal/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,8 +101,8 @@ func TestBuildPlanPKLookup(t *testing.T) {
 	if pkPlan.ViewName != "test_users" {
 		t.Errorf("ViewName = %q, want %q", pkPlan.ViewName, "test_users")
 	}
-	if len(pkPlan.PkParts) != 1 || pkPlan.PkParts[0] != "abc" {
-		t.Errorf("PkParts = %v, want %v", pkPlan.PkParts, []string{"abc"})
+	if len(pkPlan.PKParts) != 1 || pkPlan.PKParts[0] != "abc" {
+		t.Errorf("PKParts = %v, want %v", pkPlan.PKParts, []string{"abc"})
 	}
 	if pkPlan.Separator != "|" {
 		t.Errorf("Separator = %q, want %q", pkPlan.Separator, "|")
@@ -240,38 +239,6 @@ func TestBuildPlanPKLookupWithLimit(t *testing.T) {
 // Embedded NATS helpers for integration tests
 // ---------------------------------------------------------------------------
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
-	t.Helper()
-	opts := &server.Options{
-		Port:       -1,
-		JetStream:  true,
-		StoreDir:   t.TempDir(),
-		ServerName: "test-query",
-		NoLog:      true,
-		NoSigs:     true,
-	}
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("failed to start NATS server: %v", err)
-	}
-	srv.Start()
-	if !srv.ReadyForConnections(5 * time.Second) {
-		t.Fatal("NATS server not ready within 5 seconds")
-	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(5*time.Second))
-	if err != nil {
-		srv.Shutdown()
-		t.Fatalf("failed to connect: %v", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		srv.Shutdown()
-		t.Fatalf("failed to create JetStream context: %v", err)
-	}
-	return srv, nc, js
-}
-
 // setupTestData creates a KV bucket, stores a schema, and inserts test rows.
 func setupTestData(t *testing.T, ctx context.Context, js jetstream.JetStream) jetstream.KeyValue {
 	t.Helper()
@@ -301,7 +268,7 @@ func setupTestData(t *testing.T, ctx context.Context, js jetstream.JetStream) je
 		if err != nil {
 			t.Fatalf("marshal row failed: %v", err)
 		}
-		key := kv.BuildPkKey(testSchema.Name, []string{row.pk}, testSchema.KeySeparator)
+		key := kv.BuildPKKey(testSchema.Name, []string{row.pk}, testSchema.KeySeparator)
 		if _, err := kvb.Put(ctx, key, data); err != nil {
 			t.Fatalf("Put(%q) failed: %v", key, err)
 		}
@@ -318,15 +285,15 @@ func TestPKLookupFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PkParts:   []string{"u1"},
+		PKParts:   []string{"u1"},
 		Separator: "|",
 		Columns:   nil, // all columns
 	}
@@ -350,15 +317,15 @@ func TestPKLookupNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PkParts:   []string{"nonexistent"},
+		PKParts:   []string{"nonexistent"},
 		Separator: "|",
 		Columns:   nil,
 	}
@@ -376,8 +343,8 @@ func TestFullScanAll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
@@ -400,8 +367,8 @@ func TestFullScanWithWhere(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
@@ -428,8 +395,8 @@ func TestFullScanWithLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
@@ -453,15 +420,15 @@ func TestProjectionSelectStar(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PkParts:   []string{"u1"},
+		PKParts:   []string{"u1"},
 		Separator: "|",
 		Columns:   nil, // SELECT *
 	}
@@ -486,15 +453,15 @@ func TestProjectionSelectCols(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PkParts:   []string{"u1"},
+		PKParts:   []string{"u1"},
 		Separator: "|",
 		Columns:   []string{"name", "age"},
 	}
@@ -522,15 +489,15 @@ func TestProjectionMissingCol(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb := setupTestData(t, ctx, js)
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PkParts:   []string{"u1"},
+		PKParts:   []string{"u1"},
 		Separator: "|",
 		Columns:   []string{"nonexistent"},
 	}
@@ -556,8 +523,8 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb, err := kv.InitBucket(ctx, js, 1)
@@ -582,7 +549,7 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	key := kv.BuildPkKey(testSchema.Name, []string{"meta_test"}, testSchema.KeySeparator)
+	key := kv.BuildPKKey(testSchema.Name, []string{"meta_test"}, testSchema.KeySeparator)
 	if _, err := kvb.Put(ctx, key, data); err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
@@ -590,7 +557,7 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	// SELECT * (Columns=nil) — should exclude _meta
 	plan := &PKLookupPlan{
 		ViewName:  testSchema.Name,
-		PkParts:   []string{"meta_test"},
+		PKParts:   []string{"meta_test"},
 		Separator: testSchema.KeySeparator,
 		Columns:   nil, // SELECT *
 	}
@@ -619,7 +586,7 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	// Explicit column selection should still work unchanged (D-06)
 	plan2 := &PKLookupPlan{
 		ViewName:  testSchema.Name,
-		PkParts:   []string{"meta_test"},
+		PKParts:   []string{"meta_test"},
 		Separator: testSchema.KeySeparator,
 		Columns:   []string{"name", "_meta"}, // explicit _meta selection
 	}
@@ -641,8 +608,8 @@ func TestLargeIntegerPrecision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb, err := kv.InitBucket(ctx, js, 1)
@@ -666,7 +633,7 @@ func TestLargeIntegerPrecision(t *testing.T) {
 	bigVal := "9007199254740993"
 	rawJSON := `{"id":"big1","val":` + bigVal + `}`
 	data := []byte(rawJSON)
-	key := kv.BuildPkKey(schema.Name, []string{"big1"}, schema.KeySeparator)
+	key := kv.BuildPKKey(schema.Name, []string{"big1"}, schema.KeySeparator)
 	if _, err := kvb.Put(ctx, key, data); err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
@@ -674,7 +641,7 @@ func TestLargeIntegerPrecision(t *testing.T) {
 	// Read back via PK lookup — value should be json.Number, not truncated float64
 	plan := &PKLookupPlan{
 		ViewName:  schema.Name,
-		PkParts:   []string{"big1"},
+		PKParts:   []string{"big1"},
 		Separator: schema.KeySeparator,
 		Columns:   nil,
 	}
@@ -748,8 +715,8 @@ func TestViewNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb, err := kv.InitBucket(ctx, js, 1)
@@ -769,14 +736,14 @@ func TestViewNotFound(t *testing.T) {
 
 func TestPKEncoding_SpecialCharacters_WriteRead(t *testing.T) {
 	// Black-box integration test: write a row with special PK characters
-	// using BuildPkKey (simulating write path), then read it back using
-	// PKLookupPlan with BuildPkKey (simulating read path).
+	// using BuildPKKey (simulating write path), then read it back using
+	// PKLookupPlan with BuildPKKey (simulating read path).
 	// Proves write and read produce identical KV keys.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := testutil.StartEmbeddedNATS(t)
+
 	defer nc.Close()
 
 	kvb, err := kv.InitBucket(ctx, js, 1)
@@ -817,17 +784,17 @@ func TestPKEncoding_SpecialCharacters_WriteRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal failed: %v", err)
 		}
-		key := kv.BuildPkKey(schema.Name, sp.pkParts, schema.KeySeparator)
+		key := kv.BuildPKKey(schema.Name, sp.pkParts, schema.KeySeparator)
 		if _, err := kvb.Put(ctx, key, data); err != nil {
 			t.Fatalf("Put(%q) failed: %v", key, err)
 		}
 	}
 
-	// Read back using PKLookupPlan (same BuildPkKey call)
+	// Read back using PKLookupPlan (same BuildPKKey call)
 	for _, sp := range specialPKs {
 		plan := &PKLookupPlan{
 			ViewName:  schema.Name,
-			PkParts:   sp.pkParts,
+			PKParts:   sp.pkParts,
 			Separator: schema.KeySeparator,
 			Columns:   nil,
 		}

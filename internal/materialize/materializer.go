@@ -101,74 +101,88 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 //   - Context canceled: return immediately
 //   - Consumer errors: logged, continue
 func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, logger *slog.Logger, drainCh <-chan struct{}) error {
-	// 1. Create durable consumer
 	cons, err := SetupConsumer(ctx, js, viewCfg.SourceStream, viewCfg.Name, viewCfg.SourceSubject, viewCfg.Consumer)
 	if err != nil {
 		return fmt.Errorf("setting up consumer for view %q: %w", viewCfg.Name, err)
 	}
 
-	// 2. Create mapper
 	mapper, err := NewMapper(viewCfg)
 	if err != nil {
 		return fmt.Errorf("creating mapper for view %q: %w", viewCfg.Name, err)
 	}
 
-	// 3. Create writer
 	sep := viewCfg.KeySeparator
 	if sep == "" {
-		sep = "/" // must be a valid NATS KV key char; see kv.BuildPkKey
+		sep = "/"
 	}
 	writer := NewWriter(bucket, viewCfg.Name, sep)
 
-	// 4. Store schema in KV
 	schema := viewCfg.BuildSchema()
 	if err := kvpkg.StoreSchema(ctx, bucket, viewCfg.Name, schema); err != nil {
 		logger.Warn("failed to store schema in KV", "view", viewCfg.Name, "error", err)
-		// Non-fatal: materializer can still process events
 	}
 
-	// 5. Setup messages context
 	msgCtx, err := cons.Messages()
 	if err != nil {
 		return fmt.Errorf("getting messages context for view %q: %w", viewCfg.Name, err)
 	}
 
-	// 6. Sequential processing loop (D-01, D-02)
-	// No bridge goroutine, no worker pool, no buffered channel.
-	// The consumer's Messages() drives processing directly, preserving
-	// JetStream per-subject ordering.
 	var eventCount atomic.Int64
 
-	// Deferred recover: if processEvent panics, log and return (T-09-01-02)
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("materializer recovered from panic", "view", viewCfg.Name, "panic", r)
 		}
 	}()
 
-	// Drain handler: when drainCh is signaled, drain the consumer (D-58)
-	var drainDone chan struct{}
-	if drainCh != nil {
-		drainDone = make(chan struct{})
-		go func() {
-			defer close(drainDone)
-			select {
-			case <-drainCh:
-				msgCtx.Drain()
-			case <-ctx.Done():
-			}
-		}()
-	}
+	drainDone := startDrainHandler(ctx, msgCtx, drainCh)
+	go runHeartbeat(ctx, logger, viewCfg.Name, &eventCount)
 
+	processMsgLoop(ctx, js, mapper, writer, msgCtx, viewCfg, logger, &eventCount)
+
+	if drainDone != nil {
+		<-drainDone
+	}
+	logger.Info("materializer shutting down", "view", viewCfg.Name, "events_processed", eventCount.Load())
+	return ctx.Err()
+}
+
+func startDrainHandler(ctx context.Context, msgCtx jetstream.MessagesContext, drainCh <-chan struct{}) chan struct{} {
+	if drainCh == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-drainCh:
+			msgCtx.Drain()
+		case <-ctx.Done():
+		}
+	}()
+	return done
+}
+
+func runHeartbeat(ctx context.Context, logger *slog.Logger, viewName string, eventCount *atomic.Int64) {
+	heartbeat := time.NewTicker(60 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-heartbeat.C:
+			logger.Info("materializer heartbeat", "view", viewName, "events_processed", eventCount.Load())
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func processMsgLoop(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msgCtx jetstream.MessagesContext, viewCfg *natsql.ViewConfig, logger *slog.Logger, eventCount *atomic.Int64) {
 	for {
 		msg, nextErr := msgCtx.Next(jetstream.NextContext(ctx))
 		if nextErr != nil {
-			// If the main context is done, it's a normal shutdown
 			if ctx.Err() != nil {
 				break
 			}
-			// If drain was requested, msgCtx.Drain() causes Next() to
-			// deliver remaining in-flight messages then return ErrMsgIteratorClosed
 			if errors.Is(nextErr, jetstream.ErrMsgIteratorClosed) {
 				break
 			}
@@ -181,33 +195,10 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 			testHookProcessGoroutine()
 		}
 
-		// Per-event timeout to prevent a stuck KV write from blocking
-		// indefinitely (T-09-01-01).
 		eventCtx, eventCancel := context.WithTimeout(ctx, 30*time.Second)
 		processEvent(eventCtx, js, mapper, writer, msg, viewCfg, logger)
 		eventCancel()
 	}
-
-	// 7. Heartbeat logs progress every 60s in background (D-03)
-	go func() {
-		heartbeat := time.NewTicker(60 * time.Second)
-		defer heartbeat.Stop()
-		for {
-			select {
-			case <-heartbeat.C:
-				logger.Info("materializer heartbeat", "view", viewCfg.Name, "events_processed", eventCount.Load())
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Wait for drain handler to complete before returning
-	if drainDone != nil {
-		<-drainDone
-	}
-	logger.Info("materializer shutting down", "view", viewCfg.Name, "events_processed", eventCount.Load())
-	return ctx.Err()
 }
 
 // errorClass categorizes KV write errors for processEvent routing.
@@ -246,74 +237,80 @@ func classifyWriteError(err error) errorClass {
 	return errorClassTerminal
 }
 
-// processEvent handles one event: map → write/error → ack/Nak.
 func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, logger *slog.Logger) {
 	mut, mapErr := mapper.MapRow(msg)
 	if mapErr != nil {
-		if errors.Is(mapErr, ErrMalformedEvent) {
-			if ctx.Err() != nil {
-				_ = msg.Nak()
-				return
-			}
-			if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr); dlqErr != nil {
-				logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
-				if nakErr := msg.Nak(); nakErr != nil {
-					logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
-				}
-			} else {
-				if ackErr := msg.Ack(); ackErr != nil {
-					logger.Warn("failed to ack malformed event", "seq", getMsgSeq(msg), "error", ackErr)
-				}
-			}
-			logger.Warn("skipped malformed event", "seq", getMsgSeq(msg), "error", mapErr)
-			return
-		}
-		if nakErr := msg.Nak(); nakErr != nil {
-			logger.Warn("failed to nak event", "seq", getMsgSeq(msg), "error", nakErr)
-		}
-		logger.Error("unexpected mapper error", "seq", getMsgSeq(msg), "error", mapErr)
+		handleMapError(ctx, js, msg, viewCfg.Name, mapErr, logger)
 		return
 	}
 
 	if mut != nil {
 		if writeErr := writer.Apply(ctx, mut); writeErr != nil {
-			// Context cancellation — NAK for redelivery
-			if ctx.Err() != nil {
-				if nakErr := msg.Nak(); nakErr != nil {
-					logger.Warn("failed to nak event after context cancellation", "seq", getMsgSeq(msg), "error", nakErr)
-				}
-				return
-			}
-
-			switch classifyWriteError(writeErr) {
-			case errorClassTransient:
-				// Transient failure: NAK with backoff — JetStream handles retry timing
-				logger.Warn("transient write failure, nacking for redelivery", "seq", getMsgSeq(msg), "error", writeErr)
-				if nakErr := msg.Nak(); nakErr != nil {
-					logger.Warn("failed to nak transient event", "seq", getMsgSeq(msg), "error", nakErr)
-				}
-				return
-
-			case errorClassTerminal:
-				// Terminal failure: DLQ + Ack
-				logger.Error("terminal write failure, sending to DLQ", "seq", getMsgSeq(msg), "error", writeErr)
-				if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
-					logger.Error("DLQ publish failed, nacking event", "seq", getMsgSeq(msg), "error", dlqErr)
-					if nakErr := msg.Nak(); nakErr != nil {
-						logger.Warn("failed to nak event after DLQ failure", "seq", getMsgSeq(msg), "error", nakErr)
-					}
-				} else {
-					if ackErr := msg.Ack(); ackErr != nil {
-						logger.Warn("failed to ack event after DLQ publish", "seq", getMsgSeq(msg), "error", ackErr)
-					}
-				}
-				return
-			}
+			handleWriteError(ctx, js, msg, viewCfg, writeErr, logger)
+			return
 		}
 	}
 
 	if ackErr := msg.Ack(); ackErr != nil {
 		logger.Warn("failed to ack processed event", "seq", getMsgSeq(msg), "error", ackErr)
+	}
+}
+
+func handleMapError(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewName string, mapErr error, logger *slog.Logger) {
+	seq := getMsgSeq(msg)
+	if !errors.Is(mapErr, ErrMalformedEvent) {
+		if nakErr := msg.Nak(); nakErr != nil {
+			logger.Warn("failed to nak event", "seq", seq, "error", nakErr)
+		}
+		logger.Error("unexpected mapper error", "seq", seq, "error", mapErr)
+		return
+	}
+
+	if ctx.Err() != nil {
+		_ = msg.Nak() // context canceled; nak so message is redelivered on restart
+		return
+	}
+
+	if dlqErr := publishToDLQ(ctx, js, msg, viewName, mapErr); dlqErr != nil {
+		logger.Error("DLQ publish failed, nacking event", "seq", seq, "error", dlqErr)
+		if nakErr := msg.Nak(); nakErr != nil {
+			logger.Warn("failed to nak event after DLQ failure", "seq", seq, "error", nakErr)
+		}
+	} else {
+		if ackErr := msg.Ack(); ackErr != nil {
+			logger.Warn("failed to ack malformed event", "seq", seq, "error", ackErr)
+		}
+	}
+	logger.Warn("skipped malformed event", "seq", seq, "error", mapErr)
+}
+
+func handleWriteError(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewCfg *natsql.ViewConfig, writeErr error, logger *slog.Logger) {
+	seq := getMsgSeq(msg)
+	if ctx.Err() != nil {
+		if nakErr := msg.Nak(); nakErr != nil {
+			logger.Warn("failed to nak event after context cancellation", "seq", seq, "error", nakErr)
+		}
+		return
+	}
+
+	switch classifyWriteError(writeErr) {
+	case errorClassTransient:
+		logger.Warn("transient write failure, nacking for redelivery", "seq", seq, "error", writeErr)
+		if nakErr := msg.Nak(); nakErr != nil {
+			logger.Warn("failed to nak transient event", "seq", seq, "error", nakErr)
+		}
+	case errorClassTerminal:
+		logger.Error("terminal write failure, sending to DLQ", "seq", seq, "error", writeErr)
+		if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
+			logger.Error("DLQ publish failed, nacking event", "seq", seq, "error", dlqErr)
+			if nakErr := msg.Nak(); nakErr != nil {
+				logger.Warn("failed to nak event after DLQ failure", "seq", seq, "error", nakErr)
+			}
+		} else {
+			if ackErr := msg.Ack(); ackErr != nil {
+				logger.Warn("failed to ack event after DLQ publish", "seq", seq, "error", ackErr)
+			}
+		}
 	}
 }
 

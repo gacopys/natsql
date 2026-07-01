@@ -8,8 +8,6 @@ on:
 
 jobs:
   example:
-    name: ${{ matrix.example }}
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         example:
@@ -18,23 +16,44 @@ jobs:
           - 03-malformed-events
           - 04-multiple-views
           - 05-library-embed
+          - 08-where-operators
+          - 09-key-separator
+          - 10-source-subject
+          - 11-consumer-tuning
+          - 12-http-options
+          - 13-bool-timestamp
+          - 14-yaml-vs-json
+          - 15-autocreate-streams
+          - 16-poll-for-ready
+          - 17-dual-engine
+          - 18-nats-request
+          - 19-custom-logger
+      fail-fast: false
+    name: Run ${{ matrix.example }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: examples/${{ matrix.example }}/go.mod
       - name: Run
         run: go run .
         working-directory: examples/${{ matrix.example }}
 
-  perf-benchmark:
-    name: 07-perf-benchmark (build only)
+  build-only:
+    strategy:
+      matrix:
+        example:
+          - 07-perf-benchmark
+      fail-fast: false
+    name: Build ${{ matrix.example }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: examples/07-perf-benchmark/go.mod
+          go-version-file: examples/${{ matrix.example }}/go.mod
       - name: Build
         run: go build .
-        working-directory: examples/07-perf-benchmark
+        working-directory: examples/${{ matrix.example }}

@@ -26,6 +26,7 @@ linters:
     - asasalint                  # variadic ...any in front of ...any
     - bodyclose                  # unclosed HTTP response bodies
     - copyloopvar                # loop variable copies (Go 1.22+ capture semantics)
+    - depguard                   # import allow/deny rules (internal must not import root)
     - durationcheck              # suspicious time.Duration multiplications
     - errname                    # error variable naming conventions
     - errorlint                  # error wrapping and comparison
@@ -33,6 +34,7 @@ linters:
     - fatcontext                 # context.Value chaining in structs
     - gci                        # import ordering and grouping
     - gocheckcompilerdirectives  # validate //go:build / //go:generate directives
+    - godot                      # doc comments end with a period
     - gofumpt                    # strict gofmt
     - gosec                      # security-sensitive code patterns
     - intrange                   # Go 1.22+ integer range loop simplifications
@@ -43,15 +45,29 @@ linters:
     - nilnesserr                 # stricter nil-error analysis
     - noctx                      # net/http requests without context
     - nolintlint                 # malformed //nolint directives
+    - paralleltest               # tests missing t.Parallel()
     - perfsprint                 # sprintf that can be replaced with faster alternatives
     - predeclared                # shadowed Go predeclared identifiers
+    - revive                     # golint replacement: doc comments, naming, code patterns
     - sloglint                   # structured logging best practices
+    - tagliatelle                # struct tag naming conventions (snake_case)
     - unconvert                  # unnecessary type conversions
     - unparam                    # unused function parameters
     - usestdlibvars              # standard library constants and variables
     - whitespace                 # blank lines around control flow
 
 linters-settings:
+  # ----- depguard: prevent internal/ from importing the root facade -----
+  depguard:
+    rules:
+      no-root-from-internal:
+        files:
+          - "**/internal/**/*.go"
+          - "!**/*_test.go"
+        deny:
+          - pkg: "github.com/gacopys/natsql$"
+            desc: "internal packages must not import the root natsql package (import cycle risk)"
+
   errcheck:
     check-type-assertions: true
 
@@ -66,6 +82,15 @@ linters-settings:
       - prefix(github.com/gacopys/natsql)
     custom-order: true
 
+  # ----- godot: doc comments must end with a period -----
+  godot:
+    capital: true
+    period: true
+    scope: declarations
+    exclude:
+      - "^Deprecated"
+      - "^Example"
+
   gofumpt:
     module-path: github.com/gacopys/natsql
 
@@ -79,12 +104,57 @@ linters-settings:
   nakedret:
     max-func-lines: 30
 
+  # ----- paralleltest: flag tests missing t.Parallel() -----
+  paralleltest:
+    ignore-missing: true
+    ignore-missing-subtests: true
+
   perfsprint:
     int-conversion: true
     sprintf1: true
 
+  # ----- revive: replaces golint, enforces doc-comments + code style -----
+  revive:
+    enable-all-rules: false
+    confidence: 0.8
+    rules:
+      - name: exported
+        severity: warning
+      - name: error-strings
+        severity: warning
+      - name: error-naming
+        severity: warning
+      - name: receiver-naming
+        severity: warning
+      - name: early-return
+        severity: warning
+      - name: superfluous-else
+        severity: warning
+        arguments:
+          - preserveScope: false
+      - name: unused-parameter
+        severity: warning
+      - name: increment-decrement
+        severity: warning
+      - name: range
+        severity: warning
+      - name: blank-imports
+        severity: warning
+      - name: struct-tag
+        severity: warning
+      - name: use-any
+        severity: warning
+
   sloglint:
     no-mixed-args: true
+
+  # ----- tagliatelle: enforce snake_case on struct tags -----
+  tagliatelle:
+    case:
+      use-field-name: true
+      rules:
+        json: snake
+        yaml: snake
 
   usestdlibvars:
     constant-kind: true

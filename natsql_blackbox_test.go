@@ -446,26 +446,7 @@ func TestBlackBox_Queries(t *testing.T) {
 	// -----------------------------------------------------------------------
 
 	t.Run("Result_type_integrity", func(t *testing.T) {
-		res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'user-001'")
-		rows := requireResultCount(t, res, "type integrity", 1)
-		row := rows[0]
-
-		// user_id is a string
-		if _, ok := row["user_id"].(string); !ok {
-			t.Errorf("user_id type = %T, want string", row["user_id"])
-		}
-		// age is a number — decoded with UseNumber (D-07/D-08) for precision,
-		// so it surfaces as json.Number, which still serializes as a JSON number.
-		ageNum, ok := row["age"].(json.Number)
-		if !ok {
-			t.Errorf("age type = %T, want json.Number", row["age"])
-		} else if ageNum.String() != "25" {
-			t.Errorf("age = %s, want 25", ageNum.String())
-		}
-		// active is a boolean
-		if _, ok := row["active"].(bool); !ok {
-			t.Errorf("active type = %T, want bool", row["active"])
-		}
+		testResultTypeIntegrity(t, eng, ctx)
 	})
 
 	// -----------------------------------------------------------------------
@@ -473,31 +454,55 @@ func TestBlackBox_Queries(t *testing.T) {
 	// -----------------------------------------------------------------------
 
 	t.Run("JSON_marshal_roundtrip", func(t *testing.T) {
-		res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'user-001'")
-		rows := requireResultCount(t, res, "JSON roundtrip", 1)
-
-		data, err := json.Marshal(res)
-		if err != nil {
-			t.Fatalf("json.Marshal QueryResult: %v", err)
-		}
-		if !json.Valid(data) {
-			t.Fatal("QueryResult JSON is not valid")
-		}
-
-		var decoded natsql.QueryResult
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("json.Unmarshal QueryResult: %v", err)
-		}
-		if len(decoded.Results) != 1 {
-			t.Fatalf("roundtrip: got %d results, want 1", len(decoded.Results))
-		}
-		// Check the round-tripped JSON matches the original results
-		origJSON, _ := json.Marshal(rows[0])
-		rtJSON, _ := json.Marshal(decoded.Results[0])
-		if string(origJSON) != string(rtJSON) {
-			t.Errorf("roundtrip mismatch:\n  original: %s\n  decoded:  %s", origJSON, rtJSON)
-		}
+		testJSONMarshalRoundtrip(t, eng, ctx)
 	})
+}
+
+func testResultTypeIntegrity(t *testing.T, eng *natsql.Engine, ctx context.Context) {
+	t.Helper()
+	res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'user-001'")
+	rows := requireResultCount(t, res, "type integrity", 1)
+	row := rows[0]
+
+	if _, ok := row["user_id"].(string); !ok {
+		t.Errorf("user_id type = %T, want string", row["user_id"])
+	}
+	ageNum, ok := row["age"].(json.Number)
+	if !ok {
+		t.Errorf("age type = %T, want json.Number", row["age"])
+	} else if ageNum.String() != "25" {
+		t.Errorf("age = %s, want 25", ageNum.String())
+	}
+	if _, ok := row["active"].(bool); !ok {
+		t.Errorf("active type = %T, want bool", row["active"])
+	}
+}
+
+func testJSONMarshalRoundtrip(t *testing.T, eng *natsql.Engine, ctx context.Context) {
+	t.Helper()
+	res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'user-001'")
+	rows := requireResultCount(t, res, "JSON roundtrip", 1)
+
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("json.Marshal QueryResult: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Fatal("QueryResult JSON is not valid")
+	}
+
+	var decoded natsql.QueryResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal QueryResult: %v", err)
+	}
+	if len(decoded.Results) != 1 {
+		t.Fatalf("roundtrip: got %d results, want 1", len(decoded.Results))
+	}
+	origJSON, _ := json.Marshal(rows[0])
+	rtJSON, _ := json.Marshal(decoded.Results[0])
+	if string(origJSON) != string(rtJSON) {
+		t.Errorf("roundtrip mismatch:\n  original: %s\n  decoded:  %s", origJSON, rtJSON)
+	}
 }
 
 // ---------------------------------------------------------------------------

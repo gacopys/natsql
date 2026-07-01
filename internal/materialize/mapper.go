@@ -26,7 +26,7 @@ var (
 
 // RowMutation represents the result of mapping one event to a row mutation.
 type RowMutation struct {
-	PkParts   []string       // raw primary key component values (not sanitized, not joined)
+	PKParts   []string       // raw primary key component values (not sanitized, not joined)
 	RowData   map[string]any // column name → typed value
 	StreamSeq uint64         // stream sequence from message metadata
 	Timestamp time.Time      // event timestamp from message metadata
@@ -102,7 +102,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	}
 
 	return &RowMutation{
-		PkParts:   pkParts, // raw parts — no sanitization, no joining
+		PKParts:   pkParts, // raw parts — no sanitization, no joining
 		RowData:   rowData,
 		StreamSeq: meta.Sequence.Stream,
 		Timestamp: meta.Timestamp,
@@ -203,7 +203,7 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 
 // stringifyValue converts a typed value to its string representation
 // for use in PK construction. Returns the raw string — sanitization
-// happens at the KV boundary in BuildPkKey.
+// happens at the KV boundary in BuildPKKey.
 func stringifyValue(val any) string {
 	switch v := val.(type) {
 	case string:

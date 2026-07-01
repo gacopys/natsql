@@ -76,9 +76,9 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify KV has the row
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("users", []string{"abc123"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("users", []string{"abc123"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("users", []string{"abc123"}, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey("users", []string{"abc123"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("KV entry is nil — event was not materialized")
@@ -176,33 +176,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 		t.Fatalf("did not receive DLQ message within timeout: %v", err)
 	}
 
-	// Check envelope
-	var envelope map[string]any
-	if err := json.Unmarshal(dlqMsg.Data, &envelope); err != nil {
-		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
-	}
-
-	if envelope["view_name"] != "dlq_test" {
-		t.Errorf("view_name = %v, want %q", envelope["view_name"], "dlq_test")
-	}
-	if _, ok := envelope["error"]; !ok {
-		t.Error("DLQ envelope missing 'error' field")
-	}
-	if _, ok := envelope["timestamp"]; !ok {
-		t.Error("DLQ envelope missing 'timestamp' field")
-	}
-	origB64, ok := envelope["original_message_b64"].(string)
-	if !ok || origB64 == "" {
-		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v", envelope["original_message_b64"], envelope["original_message_b64"])
-	}
-	// Decode and verify original bytes
-	origBytes, err := base64.StdEncoding.DecodeString(origB64)
-	if err != nil {
-		t.Fatalf("failed to decode original_message_b64: %v", err)
-	}
-	if string(origBytes) != "{invalid json" {
-		t.Errorf("original_message_b64 decoded to %q, want %q", string(origBytes), "{invalid json")
-	}
+	verifyDLQEnvelope(t, dlqMsg.Data, "dlq_test", "{invalid json")
 
 	// Clean shutdown
 	matCancel()
@@ -279,9 +253,9 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify the valid event was materialized
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("continue_test", []string{"valid1"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("continue_test", []string{"valid1"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("continue_test", []string{"valid1"}, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey("continue_test", []string{"valid1"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("valid event was not materialized after malformed event")
@@ -500,7 +474,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify row
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("nested_test", []string{"u42"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("nested_test", []string{"u42"}, ""))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -594,6 +568,7 @@ func TestMaterializerDrain(t *testing.T) {
 
 // goroutineID returns the current goroutine's ID by parsing the stack trace.
 func goroutineID(t *testing.T) uint64 {
+	t.Helper()
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
 	var id uint64
@@ -755,7 +730,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Read the final value
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("seq_order_test", []string{"same_key"}, "|"))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("seq_order_test", []string{"same_key"}, "|"))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -764,17 +739,19 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	}
 
 	var stored map[string]any
-	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(entry.Value()))
+	dec.UseNumber()
+	if err := dec.Decode(&stored); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
 	// The counter should be 9 (the last published value)
-	counter, ok := stored["counter"].(float64)
+	counter, ok := stored["counter"].(json.Number)
 	if !ok {
 		t.Fatalf("counter is not a number, got %T=%v", stored["counter"], stored["counter"])
 	}
-	if counter != 9 {
-		t.Errorf("final counter = %v, want 9 — events were applied out of order", counter)
+	if counter.String() != "9" {
+		t.Errorf("final counter = %s, want 9 — events were applied out of order", counter.String())
 	}
 
 	// Clean shutdown
@@ -844,8 +821,8 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 	// materialization latency is variable.
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		hb1, err1 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb1"}, "|"))
-		hb2, err2 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb2"}, "|"))
+		hb1, err1 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb1"}, "|"))
+		hb2, err2 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb2"}, "|"))
 		if err1 == nil && hb1 != nil && err2 == nil && hb2 != nil {
 			break
 		}
@@ -996,7 +973,7 @@ type fakeJS struct {
 	publishErr    error
 }
 
-func (f *fakeJS) Publish(ctx context.Context, subject string, data []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+func (f *fakeJS) Publish(_ context.Context, _ string, _ []byte, _ ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	f.publishCalled = true
 	return &jetstream.PubAck{}, f.publishErr
 }
@@ -1008,7 +985,7 @@ type fakeKV struct {
 	putCalled bool
 }
 
-func (f *fakeKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+func (f *fakeKV) Put(_ context.Context, _ string, _ []byte) (uint64, error) {
 	f.putCalled = true
 	return 0, f.putErr
 }
@@ -1029,11 +1006,41 @@ func (m *fakeMsg) Nak() error   { m.nakked = true; return nil }
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}}, nil
 }
-func (m *fakeMsg) Headers() nats.Header                   { return nil }
-func (m *fakeMsg) Subject() string                        { return "" }
-func (m *fakeMsg) Reply() string                          { return "" }
-func (m *fakeMsg) DoubleAck(ctx context.Context) error    { return nil }
-func (m *fakeMsg) NakWithDelay(delay time.Duration) error { return nil }
-func (m *fakeMsg) InProgress() error                      { return nil }
-func (m *fakeMsg) Term() error                            { return nil }
-func (m *fakeMsg) TermWithReason(reason string) error     { return nil }
+func (m *fakeMsg) Headers() nats.Header               { return nil }
+func (m *fakeMsg) Subject() string                    { return "" }
+func (m *fakeMsg) Reply() string                      { return "" }
+func (m *fakeMsg) DoubleAck(_ context.Context) error  { return nil }
+func (m *fakeMsg) NakWithDelay(_ time.Duration) error { return nil }
+func (m *fakeMsg) InProgress() error                  { return nil }
+func (m *fakeMsg) Term() error                        { return nil }
+func (m *fakeMsg) TermWithReason(_ string) error      { return nil }
+
+func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal string) {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
+	}
+	if envelope["view_name"] != wantViewName {
+		t.Errorf("view_name = %v, want %q", envelope["view_name"], wantViewName)
+	}
+	if _, ok := envelope["error"]; !ok {
+		t.Error("DLQ envelope missing 'error' field")
+	}
+	if _, ok := envelope["timestamp"]; !ok {
+		t.Error("DLQ envelope missing 'timestamp' field")
+	}
+	origB64, ok := envelope["original_message_b64"].(string)
+	if !ok || origB64 == "" {
+		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v",
+			envelope["original_message_b64"], envelope["original_message_b64"])
+		return
+	}
+	origBytes, err := base64.StdEncoding.DecodeString(origB64)
+	if err != nil {
+		t.Fatalf("failed to decode original_message_b64: %v", err)
+	}
+	if string(origBytes) != wantOriginal {
+		t.Errorf("original_message_b64 decoded to %q, want %q", string(origBytes), wantOriginal)
+	}
+}

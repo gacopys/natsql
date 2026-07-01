@@ -50,6 +50,7 @@ func SetupConsumer(ctx context.Context, js jetstream.JetStream, streamName strin
 		MaxDeliver:    maxDeliver,
 		AckWait:       time.Duration(ackWaitSeconds) * time.Second,
 		MaxAckPending: maxAckPending,
+		// CR-11: No InactiveThreshold — durable consumers persist until explicitly deleted.
 	}
 
 	if sourceSubject != "" {

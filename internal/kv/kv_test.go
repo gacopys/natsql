@@ -166,15 +166,15 @@ func TestSanitizePK(t *testing.T) {
 	}
 }
 
-func TestPkKey_Sanitization(t *testing.T) {
-	got := PkKey("view", "a|b/c*d>e_f")
+func TestPKKey_Sanitization(t *testing.T) {
+	got := PKKey("view", "a|b/c*d>e_f")
 	want := "view/pk/a_pb_sc_ad_ge__f"
 	if got != want {
-		t.Errorf("PkKey = %q, want %q", got, want)
+		t.Errorf("PKKey = %q, want %q", got, want)
 	}
 }
 
-func TestBuildPkKey(t *testing.T) {
+func TestBuildPKKey(t *testing.T) {
 	tests := []struct {
 		name      string
 		viewName  string
@@ -196,19 +196,19 @@ func TestBuildPkKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildPkKey(tt.viewName, tt.pkParts, tt.separator)
+			got := BuildPKKey(tt.viewName, tt.pkParts, tt.separator)
 			if got != tt.want {
-				t.Errorf("BuildPkKey(%q, %v, %q) = %q, want %q", tt.viewName, tt.pkParts, tt.separator, got, tt.want)
+				t.Errorf("BuildPKKey(%q, %v, %q) = %q, want %q", tt.viewName, tt.pkParts, tt.separator, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestPkKey_BackwardCompat(t *testing.T) {
-	result := PkKey("users", "abc123")
+func TestPKKey_BackwardCompat(t *testing.T) {
+	result := PKKey("users", "abc123")
 	expected := "users/pk/abc123"
 	if result != expected {
-		t.Errorf("PkKey backward compat: got %q, want %q", result, expected)
+		t.Errorf("PKKey backward compat: got %q, want %q", result, expected)
 	}
 }
 
