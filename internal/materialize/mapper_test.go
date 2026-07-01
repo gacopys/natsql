@@ -610,7 +610,7 @@ type testMsg struct {
 func (m *testMsg) Data() []byte                              { return m.data }
 func (m *testMsg) Metadata() (*jetstream.MsgMetadata, error) { return m.meta, nil }
 func (m *testMsg) Ack() error                                { return nil }
-func (m *testMsg) DoubleAck(ctx context.Context) error        { return nil }
+func (m *testMsg) DoubleAck(ctx context.Context) error       { return nil }
 func (m *testMsg) Nak() error                                { return nil }
 func (m *testMsg) NakWithDelay(delay time.Duration) error    { return nil }
 func (m *testMsg) InProgress() error                         { return nil }

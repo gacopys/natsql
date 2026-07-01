@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nats-server/v2/server"
 
 	"github.com/gacopys/natsql/internal/kv"
 )
@@ -706,9 +706,9 @@ func TestTypedJSON(t *testing.T) {
 	r := QueryResult{
 		Results: []map[string]any{
 			{
-				"name":   "Alice",
-				"age":    float64(30),
-				"active": true,
+				"name":     "Alice",
+				"age":      float64(30),
+				"active":   true,
 				"null_col": nil,
 			},
 		},

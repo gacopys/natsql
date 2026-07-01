@@ -69,5 +69,5 @@ func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[
 // QueryResult is the JSON response envelope per D-29.
 type QueryResult struct {
 	Results []map[string]any `json:"results"`
-	Error   *string         `json:"error"`
+	Error   *string          `json:"error"`
 }
