@@ -10,6 +10,7 @@
 [![License](https://img.shields.io/github/license/gacopys/natsql)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gacopys/natsql)](go.mod)
 [![Latest tag](https://img.shields.io/github/v/tag/gacopys/natsql)](https://github.com/gacopys/natsql/tags)
+[![GitHub stars](https://img.shields.io/github/stars/gacopys/natsql?style=social)](https://github.com/gacopys/natsql)
 
 **Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.**
 
