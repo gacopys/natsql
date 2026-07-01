@@ -1,20 +1,20 @@
-.PHONY: all build lint lint-fix vuln test coverage examples gocyclo dupl
+.PHONY: all build lint lint-fix vuln test coverage examples gocyclo dupl generate
 
 all: lint build test coverage examples
 
-build:
+build: generate
 	go build ./...
 
-lint:
+lint: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run ./...
 
-lint-fix:
+lint-fix: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run --fix ./...
 
-vuln:
+vuln: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" govulncheck ./...
 
-test:
+test: generate
 	go test -race -count=1 -coverprofile=coverage.out -v ./...
 
 coverage:
@@ -22,7 +22,7 @@ coverage:
 	@echo "━━━ Coverage per function ━━━"
 	@go tool cover -func=coverage.out
 
-examples:
+examples: generate
 	@for dir in examples/*/; do \
 		if [ -f "$$dir/go.mod" ]; then \
 			echo "Building $$dir..."; \
@@ -66,3 +66,25 @@ dupl-install:
 dupl: dupl-install
 	@echo "━━━ Code duplication report (production code, 50-token threshold) ━━━"
 	@$(ARTDUPL) -t 50 --exclude-pattern '*_test.go' internal/ cmd/ *.go 2>&1
+
+# ---------------------------------------------------------------------------
+# OpenAPI code generation
+# ---------------------------------------------------------------------------
+
+OAPI_CODEGEN := $(shell go env GOPATH)/bin/oapi-codegen
+OAPI_CONFIG := oapi-codegen.yaml
+OAPI_SPEC := openapi.yaml
+OAPI_OUTPUT := internal/transport/oapi/gen.go
+
+.PHONY: oapi-install
+oapi-install:
+	@which $(OAPI_CODEGEN) >/dev/null 2>&1 || go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.7.1
+
+# generate regenerates the chi server interface and models from openapi.yaml
+# using the pinned oapi-codegen config (see OAPI_CONFIG). Run after editing
+# openapi.yaml so the Go API stays in sync with the spec.
+generate: oapi-install
+	@echo "━━━ Generating OpenAPI server interface ━━━"
+	@$(OAPI_CODEGEN) --config $(OAPI_CONFIG) $(OAPI_SPEC)
+	@PATH="$(shell go env GOPATH)/bin:$(PATH)" gofumpt -w $(OAPI_OUTPUT) 2>/dev/null || true
+	@echo "  Generated $(OAPI_OUTPUT)"
