@@ -47,5 +47,3 @@ jobs:
         run: make test
       - name: Coverage report
         run: make coverage
-      - name: Build examples
-        run: make examples
