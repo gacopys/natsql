@@ -1,0 +1,115 @@
+run:
+  timeout: 3m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # default (enabled by default, listed for clarity):
+    - errcheck       # unchecked error return values
+    - gosimple       # code simplification
+    - govet          # correctness checks
+    - ineffassign    # ineffectual assignments
+    - staticcheck    # comprehensive static analysis
+    - typecheck      # type-checking
+    - unused         # unused code detection
+
+    # additional bug/quality detectors:
+    - asasalint       # variadic ...any in front of ...any
+    - bodyclose       # unclosed HTTP response bodies
+    - copyloopvar     # loop variable copies (Go 1.22+ capture semantics)
+    - durationcheck   # suspicious time.Duration multiplications
+    - errchkjson      # unchecked JSON marshal errors in type switches
+    - errname         # error variable naming conventions
+    - errorlint       # error wrapping and comparison
+    - fatcontext      # context.Value chaining in structs
+    - gci             # import ordering and grouping
+    - gofumpt         # strict gofmt (replaces gofmt)
+    - gosec           # security-sensitive code patterns
+    - intrange        # Go 1.22+ integer range loop simplifications
+    - misspell        # US English spelling
+    - musttag         # missing struct tags for serialization
+    - nakedret        # naked (bare) returns
+    - nilerr          # functions that return nil error after handling an error
+    - noctx           # net/http requests without context
+    - nolintlint      # malformed //nolint directives
+    - perfsprint      # sprintf that can be replaced with faster alternatives
+    - predeclared     # shadowed Go predeclared identifiers
+    - sloglint        # structured logging best practices
+    - stylecheck      # Go style (beyond staticcheck)
+    - tagalign        # struct tag alignment
+    - testifylint     # testify assertion usage
+    - thelper         # test helper signatures and naming
+    - unconvert       # unnecessary type conversions
+    - unparam         # unused function parameters
+    - usestdlibvars   # standard library constants and variables
+    - whitespace      # blank lines around control flow
+    - wrapcheck       # error return value wrapping consistency
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/gacopys/natsql)
+    custom-order: true
+
+  gofumpt:
+    module-path: github.com/gacopys/natsql
+    extra-rules: true
+
+  gosec:
+    excludes:
+      - G115
+
+  misspell:
+    locale: US
+
+  nakedret:
+    max-func-lines: 30
+
+  perfsprint:
+    int-conversion: true
+    sprintf1: true
+
+  sloglint:
+    context: all
+    no-mixed-args: true
+    no-global: "all"
+
+  stylecheck:
+    checks:
+      - all
+
+  testifylint:
+    enable-all: true
+
+  usestdlibvars:
+    constant-kind: true
+    crypto-hash: true
+    http-method: true
+    http-status-code: true
+    sql-isolation-level: true
+    time-layout: true
+    time-month: true
+    time-weekday: true
+    tls-signature-scheme: true
+
+  whitespace:
+    multi-if: true
+    multi-func: true
+
+  wrapcheck:
+    ignoreSigs:
+      - .Errorf(
+      - errors.New(
+      - errors.Unwrap(
+      - .Wrap(
+      - .Wrapf(
+      - .WithMessage(
+      - .WithMessagef(
+    ignoreSigRegexps:
+      - \.Fatalf\(
+      - \.Fatal\(

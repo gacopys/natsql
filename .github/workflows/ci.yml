@@ -16,14 +16,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Format check
-        run: make format-check
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
 
       - name: Build
         run: make build
-
-      - name: Vet
-        run: make vet
 
       - name: Test + coverage
         run: make test

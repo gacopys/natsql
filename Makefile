@@ -1,19 +1,12 @@
-.PHONY: all build vet test format-check coverage examples
+.PHONY: all build lint test coverage examples
 
-all: format-check build vet test coverage examples
-
-format-check:
-	@if [ "$(shell gofmt -l . | wc -l)" -ne 0 ]; then \
-		echo "Unformatted Go source files:"; \
-		gofmt -l .; \
-		exit 1; \
-	fi
+all: lint build test coverage examples
 
 build:
 	go build ./...
 
-vet:
-	go vet ./...
+lint:
+	golangci-lint run ./...
 
 test:
 	go test -race -count=1 -coverprofile=coverage.out -v ./...
