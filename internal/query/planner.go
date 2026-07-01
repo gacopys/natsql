@@ -32,7 +32,7 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 		}
 		separator := schema.KeySeparator
 		if separator == "" {
-			separator = "/" // must be a valid NATS KV key char; see kv.BuildPkKey
+			separator = "/" // must be a valid NATS KV key char; see kv.BuildPKKey
 		}
 
 		// Check for contradictory PK predicates (D-02)
@@ -54,10 +54,11 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 			}
 		}
 
-		// Note: pkValues are raw (not sanitized) — BuildPkKey sanitizes once at KV boundary
+		// Note: pkValues are raw (not sanitized) — BuildPKKey sanitizes once at KV boundary
+		// CR-03: ALL conditions (PK + non-PK) are kept as post-filters (D-01/D-03)
 		return &PKLookupPlan{
 			ViewName:  q.From,
-			PkParts:   pkValues,
+			PKParts:   pkValues,
 			Separator: separator,
 			Columns:   q.Select,
 			Where:     q.Where, // ALL conditions (PK + non-PK) as post-filters (D-01/D-03)

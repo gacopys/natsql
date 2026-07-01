@@ -323,6 +323,7 @@ func (e *Engine) startHTTPServer() error {
 	transport.RegisterHTTPHandler(router, e)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
+	// CR-07: net.Listen before Serve so bind errors propagate synchronously.
 	if err != nil {
 		return fmt.Errorf("HTTP listen failed on port %d: %w", e.queryPort, err)
 	}

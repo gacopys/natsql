@@ -267,7 +267,7 @@ func handleMapError(ctx context.Context, js jetstream.JetStream, msg jetstream.M
 	}
 
 	if ctx.Err() != nil {
-		_ = msg.Nak()
+		_ = msg.Nak() // context canceled; nak so message is redelivered on restart
 		return
 	}
 

@@ -1,7 +1,7 @@
 // Package kv provides NATS JetStream Key-Value operations for natsql.
 //
 // This package handles schema storage, row read/write, and canonical
-// primary-key encoding (BuildPkKey). All state is stored in a single
+// primary-key encoding (BuildPKKey). All state is stored in a single
 // JetStream KV bucket.
 //
 // Known limitations:
@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	DefaultBucket = "natsql-views" // D-06: single bucket for all views
+	// DefaultBucket is the single JetStream KV bucket used for all view state.
+	DefaultBucket = "natsql-views" // D-06
 )
 
 // ViewSchema is the immutable schema for a materialized view, stored in KV.
@@ -51,17 +52,17 @@ func InitBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jets
 	return js.CreateOrUpdateKeyValue(ctx, cfg)
 }
 
-// PkKey returns the KV key for a row in the given view.
+// PKKey returns the KV key for a row in the given view.
 // Format: "{view_name}/pk/{pkValue}" per D-07 (adapted for NATS KV key restrictions).
 // NATS KV keys only support [a-zA-Z0-9_\-./=], so '/' is used instead of ':'.
 // PK values are sanitized to prevent key injection from special characters.
 //
-// Deprecated: Use BuildPkKey instead. Kept for backward compatibility.
-func PkKey(viewName, pkValue string) string {
-	return BuildPkKey(viewName, []string{pkValue}, "")
+// Deprecated: Use BuildPKKey instead. Kept for backward compatibility.
+func PKKey(viewName, pkValue string) string {
+	return BuildPKKey(viewName, []string{pkValue}, "")
 }
 
-// sanitizeKVPK encodes characters not allowed in NATS KV keys.
+// SanitizePK encodes characters not allowed in NATS KV keys.
 // NATS KV keys only allow: [a-zA-Z0-9_\-./=]
 // Uses underscore-prefixed codes that are themselves valid key chars.
 func SanitizePK(s string) string {
@@ -86,13 +87,13 @@ func SanitizePK(s string) string {
 	return b.String()
 }
 
-// BuildPkKey constructs the full KV key for a row in the given view.
+// BuildPKKey constructs the full KV key for a row in the given view.
 // This is the SINGLE canonical function for PK key construction.
 // Both materializer (write path) and query engine (read path) MUST use this.
 //
 // Takes raw PK component values (not sanitized), joins them with the separator,
 // sanitizes PK part values (not the separator), and returns "{viewName}/pk/{sanitized}".
-func BuildPkKey(viewName string, pkParts []string, separator string) string {
+func BuildPKKey(viewName string, pkParts []string, separator string) string {
 	// 1. Sanitize each PK part individually (preserves separator characters)
 	sanitizedParts := make([]string, len(pkParts))
 	for i, part := range pkParts {

@@ -88,8 +88,8 @@ func TestMapRow_SimpleTopLevelFields(t *testing.T) {
 	if mut == nil {
 		t.Fatal("MapRow returned nil mutation")
 	}
-	if len(mut.PkParts) != 1 || mut.PkParts[0] != "abc123" {
-		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"abc123"})
+	if len(mut.PKParts) != 1 || mut.PKParts[0] != "abc123" {
+		t.Errorf("PKParts = %v, want %v", mut.PKParts, []string{"abc123"})
 	}
 	if mut.RowData["user_id"] != "abc123" {
 		t.Errorf("RowData[user_id] = %v, want %q", mut.RowData["user_id"], "abc123")
@@ -130,8 +130,8 @@ func TestMapRow_NestedJSONPath(t *testing.T) {
 	if mut == nil {
 		t.Fatal("MapRow returned nil mutation")
 	}
-	if len(mut.PkParts) != 1 || mut.PkParts[0] != "abc123" {
-		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"abc123"})
+	if len(mut.PKParts) != 1 || mut.PKParts[0] != "abc123" {
+		t.Errorf("PKParts = %v, want %v", mut.PKParts, []string{"abc123"})
 	}
 	if mut.RowData["user_id"] != "abc123" {
 		t.Errorf("RowData[user_id] = %v, want %q", mut.RowData["user_id"], "abc123")
@@ -426,8 +426,8 @@ func TestMapRow_CompositeKey_JoinedBySeparator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if len(mut.PkParts) != 2 || mut.PkParts[0] != "acme" || mut.PkParts[1] != "42" {
-		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"acme", "42"})
+	if len(mut.PKParts) != 2 || mut.PKParts[0] != "acme" || mut.PKParts[1] != "42" {
+		t.Errorf("PKParts = %v, want %v", mut.PKParts, []string{"acme", "42"})
 	}
 }
 
@@ -510,8 +510,8 @@ func TestMapRow_DefaultKeySeparator_Pipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRow failed: %v", err)
 	}
-	if len(mut.PkParts) != 2 || mut.PkParts[0] != "acme" || mut.PkParts[1] != "e1" {
-		t.Errorf("PkParts = %v, want %v", mut.PkParts, []string{"acme", "e1"})
+	if len(mut.PKParts) != 2 || mut.PKParts[0] != "acme" || mut.PKParts[1] != "e1" {
+		t.Errorf("PKParts = %v, want %v", mut.PKParts, []string{"acme", "e1"})
 	}
 }
 

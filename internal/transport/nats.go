@@ -43,7 +43,7 @@ func RegisterNATSHandler(nc *nats.Conn, handler QueryHandler) (*nats.Subscriptio
 	if err != nil {
 		return nil, fmt.Errorf("subscribing to natsql.query: %w", err)
 	}
-	if err := nc.Flush(); err != nil {
+	if err := nc.Flush(); err != nil { // CR-19: verify subscription is registered before returning
 		_ = sub.Unsubscribe()
 		return nil, fmt.Errorf("flushing subscription: %w", err)
 	}

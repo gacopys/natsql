@@ -22,9 +22,13 @@ import (
 type ColumnType string
 
 const (
-	ColumnTypeString    ColumnType = "string"
-	ColumnTypeNumber    ColumnType = "number"
-	ColumnTypeBoolean   ColumnType = "boolean"
+	// ColumnTypeString is a column containing UTF-8 string values.
+	ColumnTypeString ColumnType = "string"
+	// ColumnTypeNumber is a column containing JSON numeric values (int or float).
+	ColumnTypeNumber ColumnType = "number"
+	// ColumnTypeBoolean is a column containing true/false values.
+	ColumnTypeBoolean ColumnType = "boolean"
+	// ColumnTypeTimestamp is a column containing RFC 3339 timestamp strings.
 	ColumnTypeTimestamp ColumnType = "timestamp"
 )
 

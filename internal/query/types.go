@@ -13,9 +13,12 @@ import (
 type Op string
 
 const (
-	OpEq  Op = "="
+	// OpEq is the equality operator ("=").
+	OpEq Op = "="
+	// OpNeq is the not-equal operator ("!=").
 	OpNeq Op = "!="
-	OpIn  Op = "in"
+	// OpIn is the set-membership operator ("in").
+	OpIn Op = "in"
 )
 
 // Condition is a single WHERE clause predicate (AND-connected).
@@ -41,8 +44,8 @@ type Plan interface {
 // PKLookupPlan is a direct primary key point lookup.
 type PKLookupPlan struct {
 	ViewName  string
-	PkParts   []string    // raw PK component values (not sanitized, not joined)
-	Separator string      // separator used to join PkParts
+	PKParts   []string    // raw PK component values (not sanitized, not joined)
+	Separator string      // separator used to join PKParts
 	Columns   []string    // nil = all
 	Where     []Condition // non-PK conditions to apply as post-filter
 }
@@ -62,6 +65,8 @@ type EmptyPlan struct {
 	Columns []string
 }
 
+// Execute returns an empty result set with no KV I/O. Used when
+// contradictory predicates make the query impossible to satisfy.
 func (p *EmptyPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
 	return []map[string]any{}, nil
 }

@@ -94,7 +94,7 @@ func TestEngineEndToEnd(t *testing.T) {
 		t.Fatalf("Close engine failed: %v", err)
 	}
 
-	entry2, err := kvb.Get(ctx, kv.BuildPkKey("e2e_users", []string{"abc123"}, ""))
+	entry2, err := kvb.Get(ctx, kv.BuildPKKey("e2e_users", []string{"abc123"}, ""))
 	if err != nil {
 		t.Fatalf("Get after close failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestEngineMultipleViews(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry1, err := kvb.Get(ctx, kv.BuildPkKey("mv_users", []string{"u1"}, ""))
+	entry1, err := kvb.Get(ctx, kv.BuildPKKey("mv_users", []string{"u1"}, ""))
 	if err != nil {
 		t.Fatalf("Get mv_users failed: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestEngineMultipleViews(t *testing.T) {
 		t.Fatal("mv_users row not found")
 	}
 
-	entry2, err := kvb.Get(ctx, kv.BuildPkKey("mv_orders", []string{"ord1"}, ""))
+	entry2, err := kvb.Get(ctx, kv.BuildPKKey("mv_orders", []string{"ord1"}, ""))
 	if err != nil {
 		t.Fatalf("Get mv_orders failed: %v", err)
 	}
@@ -265,9 +265,9 @@ func TestEngineMalformedEvent(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("malformed_test", []string{"valid1"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("malformed_test", []string{"valid1"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("malformed_test", []string{"valid1"}, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey("malformed_test", []string{"valid1"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("valid event was not materialized after malformed event — engine may have stalled")
@@ -342,7 +342,7 @@ func TestEngineRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("restart_test", []string{"first"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("restart_test", []string{"first"}, ""))
 	if err != nil {
 		t.Fatalf("Get 'first' after close failed: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestEngineRestart(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify the engine still functions: existing data is readable
-	entry2, err := kvb.Get(ctx, kv.BuildPkKey("restart_test", []string{"first"}, ""))
+	entry2, err := kvb.Get(ctx, kv.BuildPKKey("restart_test", []string{"first"}, ""))
 	if err != nil {
 		t.Fatalf("Get 'first' after restart failed: %v", err)
 	}
@@ -724,7 +724,7 @@ func setupTestView(t *testing.T, ctx context.Context, js jetstream.JetStream) je
 		if err != nil {
 			t.Fatalf("marshal row failed: %v", err)
 		}
-		key := kv.BuildPkKey(schema.Name, []string{row.pk}, "")
+		key := kv.BuildPKKey(schema.Name, []string{row.pk}, "")
 		if _, err := kvb.Put(ctx, key, data); err != nil {
 			t.Fatalf("Put(%q) failed: %v", key, err)
 		}
@@ -1138,7 +1138,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 	}
 
 	for i := range 5 {
-		pk := kv.BuildPkKey("graceful_test", []string{fmt.Sprintf("g%d", i)}, "")
+		pk := kv.BuildPKKey("graceful_test", []string{fmt.Sprintf("g%d", i)}, "")
 		entry, err := kvb.Get(ctx, pk)
 		if err != nil {
 			t.Fatalf("Get(%q) failed: %v", pk, err)
@@ -1236,9 +1236,9 @@ func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, nam
 
 func assertRowInKV(t *testing.T, ctx context.Context, kvb jetstream.KeyValue, viewName string, pkParts []string, want map[string]any) {
 	t.Helper()
-	entry, err := kvb.Get(ctx, kv.BuildPkKey(viewName, pkParts, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey(viewName, pkParts, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey(viewName, pkParts, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey(viewName, pkParts, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("row not found in KV — event was not materialized")

@@ -76,9 +76,9 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify KV has the row
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("users", []string{"abc123"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("users", []string{"abc123"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("users", []string{"abc123"}, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey("users", []string{"abc123"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("KV entry is nil — event was not materialized")
@@ -253,9 +253,9 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify the valid event was materialized
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("continue_test", []string{"valid1"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("continue_test", []string{"valid1"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("continue_test", []string{"valid1"}, ""), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPKKey("continue_test", []string{"valid1"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("valid event was not materialized after malformed event")
@@ -474,7 +474,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify row
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("nested_test", []string{"u42"}, ""))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("nested_test", []string{"u42"}, ""))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -568,6 +568,7 @@ func TestMaterializerDrain(t *testing.T) {
 
 // goroutineID returns the current goroutine's ID by parsing the stack trace.
 func goroutineID(t *testing.T) uint64 {
+	t.Helper()
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
 	var id uint64
@@ -729,7 +730,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Read the final value
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("seq_order_test", []string{"same_key"}, "|"))
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("seq_order_test", []string{"same_key"}, "|"))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -738,17 +739,19 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	}
 
 	var stored map[string]any
-	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(entry.Value()))
+	dec.UseNumber()
+	if err := dec.Decode(&stored); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
 	// The counter should be 9 (the last published value)
-	counter, ok := stored["counter"].(float64)
+	counter, ok := stored["counter"].(json.Number)
 	if !ok {
 		t.Fatalf("counter is not a number, got %T=%v", stored["counter"], stored["counter"])
 	}
-	if counter != 9 {
-		t.Errorf("final counter = %v, want 9 — events were applied out of order", counter)
+	if counter.String() != "9" {
+		t.Errorf("final counter = %s, want 9 — events were applied out of order", counter.String())
 	}
 
 	// Clean shutdown
@@ -818,8 +821,8 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 	// materialization latency is variable.
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		hb1, err1 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb1"}, "|"))
-		hb2, err2 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb2"}, "|"))
+		hb1, err1 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb1"}, "|"))
+		hb2, err2 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb2"}, "|"))
 		if err1 == nil && hb1 != nil && err2 == nil && hb2 != nil {
 			break
 		}

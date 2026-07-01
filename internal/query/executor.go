@@ -21,7 +21,7 @@ const fullScanWorkers = 16
 // Returns a single row or empty slice if not found.
 // If the plan has non-PK WHERE conditions, they are applied as a post-filter.
 func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
-	key := kv.BuildPkKey(p.ViewName, p.PkParts, p.Separator)
+	key := kv.BuildPKKey(p.ViewName, p.PKParts, p.Separator)
 	entry, err := kvb.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -32,7 +32,7 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 
 	var row map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(entry.Value()))
-	decoder.UseNumber()
+	decoder.UseNumber() // CR-09: preserve exact numeric precision
 	if err := decoder.Decode(&row); err != nil {
 		return nil, fmt.Errorf("unmarshaling row: %w", err)
 	}
@@ -45,6 +45,9 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	return []map[string]any{projectRow(row, p.Columns)}, nil
 }
 
+// Execute performs a full scan over all KV keys for a view, applying
+// WHERE filters and LIMIT client-side. Keys outside the view prefix are skipped.
+// CR-09: Uses json.Decoder.UseNumber to preserve >2^53 integer precision.
 func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
 	prefix := p.ViewName + "/pk/"
 
@@ -52,7 +55,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("watching keys: %w", err)
 	}
-	defer func() { _ = watcher.Stop() }()
+	defer func() { _ = watcher.Stop() }() // best-effort stop; context may already be done
 
 	var (
 		mu      sync.Mutex
