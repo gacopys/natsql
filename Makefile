@@ -5,16 +5,16 @@ all: lint build test coverage examples
 build: generate
 	go build ./...
 
-lint:
+lint: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run ./...
 
-lint-fix:
+lint-fix: generate
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run --fix ./...
 
 vuln:
 	@PATH="$(shell go env GOPATH)/bin:$(PATH)" govulncheck ./...
 
-test:
+test: generate
 	go test -race -count=1 -coverprofile=coverage.out -v ./...
 
 coverage:
@@ -22,7 +22,7 @@ coverage:
 	@echo "━━━ Coverage per function ━━━"
 	@go tool cover -func=coverage.out
 
-examples:
+examples: generate
 	@for dir in examples/*/; do \
 		if [ -f "$$dir/go.mod" ]; then \
 			echo "Building $$dir..."; \
