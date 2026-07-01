@@ -45,16 +45,9 @@ func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	return []map[string]any{projectRow(row, p.Columns)}, nil
 }
 
-// Execute performs a full scan using kvb.WatchAll() which streams all
-// key-value pairs from the bucket in a single subscription (no per-key Gets),
-// then processes them in parallel via a worker pool for unmarshal, filtering,
-// and projection.
 func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
 	prefix := p.ViewName + "/pk/"
 
-	// Note: WatchAll is used because KV Watch pattern matching uses NATS subject
-	// semantics (tokenizing on '.'), but our keys use '/' separators. WatchAll +
-	// client-side HasPrefix filter is the correct approach (D-11 fallback per A1).
 	watcher, err := kvb.WatchAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("watching keys: %w", err)
@@ -86,48 +79,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 
 		sem <- struct{}{}
 		wg.Add(1)
-
-		go func(data []byte) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			if p.Limit > 0 {
-				mu.Lock()
-				alreadyFull := len(results) >= p.Limit
-				mu.Unlock()
-				if alreadyFull {
-					return
-				}
-			}
-
-			var fullRow map[string]any
-			fDecoder := json.NewDecoder(bytes.NewReader(data))
-			fDecoder.UseNumber()
-			if uerr := fDecoder.Decode(&fullRow); uerr != nil {
-				select {
-				case errCh <- fmt.Errorf("unmarshaling row: %w", uerr):
-				default:
-				}
-				return
-			}
-
-			if !filterRow(fullRow, p.Where) {
-				return
-			}
-
-			row := fullRow
-			if p.Columns != nil {
-				row = projectRow(fullRow, p.Columns)
-			}
-
-			mu.Lock()
-			if p.Limit > 0 && len(results) >= p.Limit {
-				mu.Unlock()
-				return
-			}
-			results = append(results, row)
-			mu.Unlock()
-		}(entry.Value())
+		go p.processEntry(ctx, entry.Value(), &mu, &results, sem, &wg, errCh)
 	}
 
 	wg.Wait()
@@ -146,6 +98,45 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 		return []map[string]any{}, nil
 	}
 	return results, nil
+}
+
+func (p *FullScanPlan) processEntry(ctx context.Context, data []byte, mu *sync.Mutex, results *[]map[string]any, sem chan struct{}, wg *sync.WaitGroup, errCh chan error) {
+	defer wg.Done()
+	defer func() { <-sem }()
+
+	mu.Lock()
+	alreadyFull := p.Limit > 0 && len(*results) >= p.Limit
+	mu.Unlock()
+	if alreadyFull {
+		return
+	}
+
+	var fullRow map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&fullRow); err != nil {
+		select {
+		case errCh <- fmt.Errorf("unmarshaling row: %w", err):
+		default:
+		}
+		return
+	}
+
+	if !filterRow(fullRow, p.Where) {
+		return
+	}
+
+	row := fullRow
+	if p.Columns != nil {
+		row = projectRow(fullRow, p.Columns)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if p.Limit > 0 && len(*results) >= p.Limit {
+		return
+	}
+	*results = append(*results, row)
 }
 
 // projectRow filters a row to only the requested columns.
@@ -235,55 +226,40 @@ func valuesEqual(a, b any) bool {
 		return a == b
 	}
 
-	// Normalize json.Number for comparison (D-09)
-	an, aIsNum := a.(json.Number)
-	bn, bIsNum := b.(json.Number)
-	if aIsNum || bIsNum {
-		aVal := a
-		bVal := b
-		if aIsNum {
-			aVal = convertJSONNumber(an)
+	aVal, bVal := normalizeValue(a), normalizeValue(b)
+
+	switch av := aVal.(type) {
+	case float64:
+		switch bv := bVal.(type) {
+		case float64:
+			return av == bv
+		case int64:
+			return av == float64(bv)
 		}
-		if bIsNum {
-			bVal = convertJSONNumber(bn)
+	case int64:
+		switch bv := bVal.(type) {
+		case int64:
+			return av == bv
+		case float64:
+			return float64(av) == bv
 		}
-		return valuesEqual(aVal, bVal)
+	case bool:
+		if bv, ok := bVal.(bool); ok {
+			return av == bv
+		}
+	case string:
+		if bv, ok := bVal.(string); ok {
+			return av == bv
+		}
 	}
 
-	// Normalize int64 → float64 for comparison (JSON numbers decode as float64)
-	af, aIsFloat := a.(float64)
-	bf, bIsFloat := b.(float64)
-	ai, aIsInt := a.(int64)
-	bi, bIsInt := b.(int64)
+	return fmt.Sprintf("%T", aVal) == fmt.Sprintf("%T", bVal) && fmt.Sprint(aVal) == fmt.Sprint(bVal)
+}
 
-	if aIsFloat && bIsInt {
-		return af == float64(bi)
+func normalizeValue(v any) any {
+	n, ok := v.(json.Number)
+	if !ok {
+		return v
 	}
-	if aIsInt && bIsFloat {
-		return float64(ai) == bf
-	}
-	if aIsFloat && bIsFloat {
-		return af == bf
-	}
-	if aIsInt && bIsInt {
-		return ai == bi
-	}
-
-	// Boolean comparison
-	ab, aIsBool := a.(bool)
-	bb, bIsBool := b.(bool)
-	if aIsBool && bIsBool {
-		return ab == bb
-	}
-
-	// String comparison
-	as, aIsStr := a.(string)
-	bs, bIsStr := b.(string)
-	if aIsStr && bIsStr {
-		return as == bs
-	}
-
-	// For same unhandled types, compare string representations
-	// For different types, return false to avoid false matches
-	return fmt.Sprintf("%T", a) == fmt.Sprintf("%T", b) && fmt.Sprint(a) == fmt.Sprint(b)
+	return convertJSONNumber(n)
 }

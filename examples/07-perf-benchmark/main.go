@@ -41,7 +41,6 @@ const numPublishers = 64
 func main() {
 	ctx := context.Background()
 
-	// ── View config: "users" with 6 columns ─────────────────────
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
@@ -60,8 +59,8 @@ func main() {
 		},
 	}
 
-	// ── Step 1: Engine setup ────────────────────────────────────
 	eng, err := natsql.NewEmbedded(cfg)
+
 	if err != nil {
 		log.Fatalf("NewEmbedded: %v", err)
 	}
@@ -74,8 +73,7 @@ func main() {
 	}
 
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     "events",
-		Subjects: []string{"events.>"},
+		Name: "events", Subjects: []string{"events.>"},
 	})
 	if err != nil {
 		log.Fatalf("CreateStream: %v", err)
@@ -86,10 +84,18 @@ func main() {
 	}
 	fmt.Println("✓ Engine started\n")
 
-	// ── Step 2: Generate and publish events via parallel publishers ─
 	const totalEvents = 1000000
-	fmt.Printf("Publishing %d events...\n", totalEvents)
+	publishEvents(ctx, js, totalEvents)
+	waitForMaterialization(ctx, eng, totalEvents)
+	runBenchmarks(ctx, eng, totalEvents)
+	fmt.Println("✅ Performance benchmark complete!")
+	fmt.Println("  PK lookups are O(1) — near-instant regardless of dataset size.")
+	fmt.Println("  Full scans enumerate every KV key — performance degrades with dataset size.")
+	fmt.Println("  Use WHERE on key_fields + LIMIT to keep queries fast.")
+}
 
+func publishEvents(ctx context.Context, js jetstream.JetStream, totalEvents int) {
+	fmt.Printf("Publishing %d events...\n", totalEvents)
 	cities := []string{"Berlin", "London", "Tokyo", "New York", "Paris", "Sydney", "Toronto", "Mumbai"}
 	firstNames := []string{"Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy",
 		"Karl", "Linda", "Mike", "Nancy", "Oscar", "Pam", "Quinn", "Rob", "Sara", "Tom"}
@@ -98,7 +104,6 @@ func main() {
 	done := make(chan struct{})
 	var published atomic.Int64
 
-	// Progress reporter
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -121,7 +126,6 @@ func main() {
 
 	var pubWg sync.WaitGroup
 	pubWg.Add(numPublishers)
-
 	eventsPerWorker := totalEvents / numPublishers
 
 	for w := 0; w < numPublishers; w++ {
@@ -130,13 +134,11 @@ func main() {
 		if w == numPublishers-1 {
 			end = totalEvents
 		}
-
 		go func(start, end int) {
 			defer pubWg.Done()
 			rng := rand.New(rand.NewSource(42 + int64(w)))
 			pubCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-
 			for j := start; j < end; j++ {
 				uid := fmt.Sprintf("user-%06d", j)
 				name := firstNames[rng.Intn(len(firstNames))]
@@ -144,12 +146,10 @@ func main() {
 				city := cities[rng.Intn(len(cities))]
 				email := fmt.Sprintf("%s.%s@example.com", strings.ToLower(name), uid)
 				active := rng.Intn(2) == 0
-
 				event := fmt.Sprintf(
 					`{"id":%q,"name":%q,"email":%q,"age":%d,"city":%q,"active":%t}`,
 					uid, name, email, age, city, active,
 				)
-
 				if _, err := js.Publish(pubCtx, "events.user-created", []byte(event)); err != nil {
 					log.Fatalf("Publish event %d: %v", j, err)
 				}
@@ -157,19 +157,17 @@ func main() {
 			}
 		}(start, end)
 	}
-
 	pubWg.Wait()
 	close(done)
 	fmt.Printf("\r  Published %d / %d (100.0%%) — done.          \n", totalEvents, totalEvents)
-	publishElapsed := time.Since(publishStart)
-	fmt.Printf("  Published %d events in %v (%.0f msg/s)\n\n", totalEvents, publishElapsed,
-		float64(totalEvents)/publishElapsed.Seconds())
+	fmt.Printf("  Published %d events in %v (%.0f msg/s)\n\n", totalEvents, time.Since(publishStart),
+		float64(totalEvents)/time.Since(publishStart).Seconds())
+}
 
-	// ── Step 3: Wait for full materialization ───────────────────
+func waitForMaterialization(ctx context.Context, eng *natsql.Engine, totalEvents int) {
 	fmt.Print("Waiting for materialization...")
-
-	var rowCount int
 	pollStart := time.Now()
+	var rowCount int
 	for {
 		time.Sleep(500 * time.Millisecond)
 		res := eng.Query(ctx, "SELECT * FROM users WHERE user_id != ''")
@@ -186,45 +184,29 @@ func main() {
 		}
 	}
 	fmt.Printf("\n  All %d rows materialized in %v\n\n", rowCount, time.Since(pollStart))
+}
 
-	// ── Step 4: Run performance queries ─────────────────────────
+func runBenchmarks(ctx context.Context, eng *natsql.Engine, totalEvents int) {
 	fmt.Println("── Running performance benchmarks ────────────────")
-
-	type benchCase struct {
-		label string
-		sql   string
-	}
 	trials := 3
 
+	type benchCase struct{ label, sql string }
 	cases := []benchCase{
-		// A — PK equality (O(1) fast path)
 		{"A) PK = 'user-000000'", "SELECT * FROM users WHERE user_id = 'user-000000'"},
 		{"A) PK = 'user-004999'", "SELECT * FROM users WHERE user_id = 'user-004999'"},
 		{"A) PK = 'user-009999'", "SELECT * FROM users WHERE user_id = 'user-009999'"},
-
-		// B — PK equality with column projection
 		{"B) PK + projection (name, age)", "SELECT name, age FROM users WHERE user_id = 'user-000000'"},
 		{"B) PK + projection (email, city, active)", "SELECT email, city, active FROM users WHERE user_id = 'user-005000'"},
-
-		// C — Full scan, no matching rows
 		{"C) No match, PK miss", "SELECT * FROM users WHERE user_id = 'nonexistent'"},
 		{"C) No match, filter miss", "SELECT * FROM users WHERE city = 'Nowhere' AND name = 'Nemo'"},
-
-		// D — Full scan with LIMIT early stop
 		{"D) Full scan, LIMIT 5", "SELECT * FROM users WHERE user_id != '' LIMIT 5"},
 		{"D) Full scan, LIMIT 50", "SELECT * FROM users WHERE user_id != '' LIMIT 50"},
 		{"D) Full scan, LIMIT 500", "SELECT * FROM users WHERE user_id != '' LIMIT 500"},
-
-		// E — Non-key WHERE (must full-scan)
 		{"E) WHERE city = 'Berlin'", "SELECT * FROM users WHERE city = 'Berlin'"},
 		{"E) WHERE city = 'Tokyo'", "SELECT * FROM users WHERE city = 'Tokyo'"},
 		{"E) WHERE age = 30", "SELECT * FROM users WHERE age = 30"},
-
-		// F — Two conditions (AND)
 		{"F) city='Berlin' AND age=30", "SELECT * FROM users WHERE city = 'Berlin' AND age = 30"},
 		{"F) city='London' AND name='Alice'", "SELECT * FROM users WHERE city = 'London' AND name = 'Alice'"},
-
-		// G — Full scan (all rows)
 		{"G) Full scan, all rows", "SELECT * FROM users WHERE user_id != ''"},
 		{"G) Full scan, all rows, LIMIT 5000", "SELECT * FROM users WHERE user_id != '' LIMIT 5000"},
 	}
@@ -239,12 +221,10 @@ func main() {
 	for _, c := range cases {
 		var totalDur time.Duration
 		var rows int
-
 		for t := 0; t < trials; t++ {
 			start := time.Now()
 			res := eng.Query(ctx, c.sql)
 			elapsed := time.Since(start)
-
 			if res.Error != nil {
 				log.Fatalf("Query %q failed: %s", c.sql, *res.Error)
 			}
@@ -256,7 +236,6 @@ func main() {
 		fmt.Printf("  %-46s → %5d rows  avg %v\n", c.label, rows, avg)
 	}
 
-	// ── Step 5: Summary table ───────────────────────────────────
 	fmt.Println()
 	fmt.Println("── Query Performance Summary ─────────────────────")
 	fmt.Println()
@@ -267,47 +246,25 @@ func main() {
 	fmt.Println(strings.Repeat("─", len(header)))
 
 	notes := []string{
-		"O(1) KV.Get",
-		"O(1) KV.Get",
-		"O(1) KV.Get",
-		"O(1) + projection",
-		"O(1) + projection",
-		"PK miss (O(1))",
-		"filter miss (full scan)",
-		"LIMIT stops early",
-		"LIMIT stops early",
-		"LIMIT stops early",
-		"full scan, filtered",
-		"full scan, filtered",
-		"full scan, filtered",
-		"full scan, 2 filters",
-		"full scan, 2 filters",
-		"full scan, all rows",
-		"full scan, LIMIT 5000",
+		"O(1) KV.Get", "O(1) KV.Get", "O(1) KV.Get",
+		"O(1) + projection", "O(1) + projection",
+		"PK miss (O(1))", "filter miss (full scan)",
+		"LIMIT stops early", "LIMIT stops early", "LIMIT stops early",
+		"full scan, filtered", "full scan, filtered", "full scan, filtered",
+		"full scan, 2 filters", "full scan, 2 filters",
+		"full scan, all rows", "full scan, LIMIT 5000",
 	}
-
-	groups := []int{3, 2, 2, 3, 3, 2, 2} // A..G group sizes
-	gi := 0
-	gn := 0
+	groups := []int{3, 2, 2, 3, 3, 2, 2}
+	gi, gn := 0, 0
 	for i, r := range results {
 		groupLetter := fmt.Sprintf("[%c]", 'A'+gi)
 		fmt.Printf("%-6s %-46s %7d  %-12v  %s\n",
-			groupLetter,
-			r.label,
-			r.rows,
-			r.avgDur.Round(time.Microsecond),
-			notes[i],
-		)
+			groupLetter, r.label, r.rows, r.avgDur.Round(time.Microsecond), notes[i])
 		gn++
 		if gn >= groups[gi] {
 			gi++
 			gn = 0
 		}
 	}
-
 	fmt.Println()
-	fmt.Println("✅ Performance benchmark complete!")
-	fmt.Println("  PK lookups are O(1) — near-instant regardless of dataset size.")
-	fmt.Println("  Full scans enumerate every KV key — performance degrades with dataset size.")
-	fmt.Println("  Use WHERE on key_fields + LIMIT to keep queries fast.")
 }

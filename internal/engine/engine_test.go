@@ -31,11 +31,9 @@ func TestEngineEndToEnd(t *testing.T) {
 
 	nc, js := startEmbeddedNATS(t)
 
-	// Create source stream
 	streamName := "TEST_ENG_E2E"
 	createStream(t, ctx, js, streamName)
 
-	// Config with one view
 	cfg := &natsqlpkg.Config{
 		Views: []natsqlpkg.ViewConfig{
 			{
@@ -52,7 +50,6 @@ func TestEngineEndToEnd(t *testing.T) {
 		},
 	}
 
-	// Create and start engine
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
@@ -63,45 +60,22 @@ func TestEngineEndToEnd(t *testing.T) {
 		t.Fatalf("Start engine failed: %v", err)
 	}
 
-	// Publish a valid event
 	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"user_id": "abc123", "name": "Alice", "age": 30}`)); err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
+	time.Sleep(2 * time.Second)
 
-	time.Sleep(2 * time.Second) // allow processing
-
-	// Verify KV has the row
 	kvb, err := kv.InitBucket(ctx, js, 1)
 	if err != nil {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	entry, err := kvb.Get(ctx, kv.BuildPkKey("e2e_users", []string{"abc123"}, ""))
-	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("e2e_users", []string{"abc123"}, ""), err)
-	}
-	if entry == nil {
-		t.Fatal("row not found in KV — event was not materialized")
-	}
+	assertRowInKV(t, ctx, kvb, "e2e_users", []string{"abc123"}, map[string]any{
+		"user_id": "abc123",
+		"name":    "Alice",
+		"age":     float64(30),
+	})
 
-	var stored map[string]any
-	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
-		t.Fatalf("unmarshal stored row failed: %v", err)
-	}
-	if stored["user_id"] != "abc123" {
-		t.Errorf("user_id = %v, want %q", stored["user_id"], "abc123")
-	}
-	if stored["name"] != "Alice" {
-		t.Errorf("name = %v, want %q", stored["name"], "Alice")
-	}
-	if stored["age"] != float64(30) {
-		t.Errorf("age = %v, want 30", stored["age"])
-	}
-	if _, ok := stored["_meta"]; !ok {
-		t.Error("_meta field missing in stored row")
-	}
-
-	// Verify schema was stored in KV (behavior 2)
 	schema, err := kv.LoadSchema(ctx, kvb, "e2e_users")
 	if err != nil {
 		t.Fatalf("LoadSchema failed: %v", err)
@@ -116,12 +90,10 @@ func TestEngineEndToEnd(t *testing.T) {
 		t.Errorf("schema has %d columns, want 3", len(schema.Columns))
 	}
 
-	// Close engine gracefully
 	if err := eng.Close(); err != nil {
 		t.Fatalf("Close engine failed: %v", err)
 	}
 
-	// Row should persist after close (KV is persistent)
 	entry2, err := kvb.Get(ctx, kv.BuildPkKey("e2e_users", []string{"abc123"}, ""))
 	if err != nil {
 		t.Fatalf("Get after close failed: %v", err)
@@ -278,32 +250,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 		t.Fatalf("did not receive DLQ message within timeout: %v", err)
 	}
 
-	// Check DLQ envelope
-	var envelope map[string]any
-	if err := json.Unmarshal(dlqMsg.Data, &envelope); err != nil {
-		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
-	}
-	if envelope["view_name"] != "malformed_test" {
-		t.Errorf("view_name = %v, want %q", envelope["view_name"], "malformed_test")
-	}
-	if _, ok := envelope["error"]; !ok {
-		t.Error("DLQ envelope missing 'error' field")
-	}
-	if _, ok := envelope["timestamp"]; !ok {
-		t.Error("DLQ envelope missing 'timestamp' field")
-	}
-	origB64, ok := envelope["original_message_b64"].(string)
-	if !ok || origB64 == "" {
-		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v",
-			envelope["original_message_b64"], envelope["original_message_b64"])
-	}
-	origBytes, err := base64.StdEncoding.DecodeString(origB64)
-	if err != nil {
-		t.Fatalf("failed to decode original_message_b64: %v", err)
-	}
-	if string(origBytes) != "{invalid json" {
-		t.Errorf("original_message decoded to %q, want %q", string(origBytes), "{invalid json")
-	}
+	verifyDLQEnvelope(t, dlqMsg.Data, "malformed_test", "{invalid json")
 
 	// Publish a valid event after the malformed one
 	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "valid1", "name": "Valid User"}`)); err != nil {
@@ -1284,5 +1231,59 @@ func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, nam
 	})
 	if err != nil {
 		t.Fatalf("failed to create stream %q: %v", name, err)
+	}
+}
+
+func assertRowInKV(t *testing.T, ctx context.Context, kvb jetstream.KeyValue, viewName string, pkParts []string, want map[string]any) {
+	t.Helper()
+	entry, err := kvb.Get(ctx, kv.BuildPkKey(viewName, pkParts, ""))
+	if err != nil {
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey(viewName, pkParts, ""), err)
+	}
+	if entry == nil {
+		t.Fatal("row not found in KV — event was not materialized")
+	}
+
+	var stored map[string]any
+	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+		t.Fatalf("unmarshal stored row failed: %v", err)
+	}
+	for key, wantVal := range want {
+		if stored[key] != wantVal {
+			t.Errorf("%s = %v, want %v", key, stored[key], wantVal)
+		}
+	}
+	if _, ok := stored["_meta"]; !ok {
+		t.Error("_meta field missing in stored row")
+	}
+}
+
+func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal string) {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
+	}
+	if envelope["view_name"] != wantViewName {
+		t.Errorf("view_name = %v, want %q", envelope["view_name"], wantViewName)
+	}
+	if _, ok := envelope["error"]; !ok {
+		t.Error("DLQ envelope missing 'error' field")
+	}
+	if _, ok := envelope["timestamp"]; !ok {
+		t.Error("DLQ envelope missing 'timestamp' field")
+	}
+	origB64, ok := envelope["original_message_b64"].(string)
+	if !ok || origB64 == "" {
+		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v",
+			envelope["original_message_b64"], envelope["original_message_b64"])
+		return
+	}
+	origBytes, err := base64.StdEncoding.DecodeString(origB64)
+	if err != nil {
+		t.Fatalf("failed to decode original_message_b64: %v", err)
+	}
+	if string(origBytes) != wantOriginal {
+		t.Errorf("original_message decoded to %q, want %q", string(origBytes), wantOriginal)
 	}
 }

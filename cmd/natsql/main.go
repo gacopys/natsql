@@ -80,13 +80,11 @@ func main() {
 }
 
 func runServer() error {
-	// 1. Load config file (D-52: config file is primary source)
 	cfg, err := natsql.LoadConfig(cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// 2. Apply CLI overrides (D-52)
 	if embedded {
 		cfg.NATS.Embedded = true
 	}
@@ -100,73 +98,19 @@ func runServer() error {
 		cfg.HTTP.Port = httpPort
 	}
 
-	// 3. Apply defaults
 	cfg.SetDefaults()
 
-	// 4. Create engine based on mode
 	logger := slog.Default()
-	var eng *natsql.Engine
-
-	if cfg.NATS.Embedded {
-		logger.Info("creating engine with embedded NATS")
-		eng, err = natsql.NewEmbedded(cfg)
-	} else {
-		logger.Info("connecting to NATS", "url", cfg.NATS.URL)
-		nc, cerr := nats.Connect(cfg.NATS.URL, nats.Timeout(10*time.Second))
-		if cerr != nil {
-			return fmt.Errorf("connecting to NATS at %s: %w", cfg.NATS.URL, cerr)
-		}
-		eng, err = natsql.NewWithNATS(nc, cfg)
-	}
+	eng, err := createEngine(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
 	}
 
-	// 5. Source stream setup (TRN-01)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if !cfg.NATS.Embedded && !createStreams {
-		// External mode without --create-streams: warn but don't create streams (D-13)
-		logger.Warn("external mode: not creating source streams (use --create-streams to opt in)")
-	} else {
-		js, jserr := jetstream.New(eng.NC())
-		if jserr == nil {
-			seen := map[string]bool{}
-			for _, v := range cfg.Views {
-				if seen[v.SourceStream] {
-					continue
-				}
-				seen[v.SourceStream] = true
+	createSourceStreams(ctx, eng, cfg, logger)
 
-				// Build subjects list respecting source_subject (D-14)
-				subjects := []string{v.SourceSubject}
-				if v.SourceSubject == "" {
-					subjects = []string{v.SourceStream + ".>"}
-				}
-
-				if !cfg.NATS.Embedded {
-					// External mode with --create-streams: skip existing streams (D-15)
-					if _, err := js.Stream(ctx, v.SourceStream); err == nil {
-						logger.Info("source stream already exists, skipping", "stream", v.SourceStream)
-						continue
-					}
-				}
-
-				_, serr := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-					Name:     v.SourceStream,
-					Subjects: subjects,
-				})
-				if serr != nil {
-					logger.Warn("failed to create source stream", "stream", v.SourceStream, "error", serr)
-				} else {
-					logger.Info("created source stream", "stream", v.SourceStream, "subjects", subjects)
-				}
-			}
-		}
-	}
-
-	// 6. Startup banner
 	mode := "external"
 	if cfg.NATS.Embedded {
 		mode = "embedded"
@@ -186,22 +130,72 @@ func runServer() error {
 		logger.Info("configured view", "name", v.Name, "source_stream", v.SourceStream)
 	}
 
-	// 7. Start engine
 	if err := eng.Start(ctx); err != nil {
 		return fmt.Errorf("starting engine: %w", err)
 	}
 	logger.Info("engine started")
 
-	// 7. Wait for SIGINT/SIGTERM (graceful shutdown)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	logger.Info("received signal, shutting down", "signal", sig)
 
-	// 8. Graceful shutdown
 	if err := eng.Close(); err != nil {
 		return fmt.Errorf("error during shutdown: %w", err)
 	}
 	logger.Info("server shut down gracefully")
 	return nil
+}
+
+func createEngine(cfg *natsql.Config, logger *slog.Logger) (*natsql.Engine, error) {
+	if cfg.NATS.Embedded {
+		logger.Info("creating engine with embedded NATS")
+		return natsql.NewEmbedded(cfg)
+	}
+	logger.Info("connecting to NATS", "url", cfg.NATS.URL)
+	nc, cerr := nats.Connect(cfg.NATS.URL, nats.Timeout(10*time.Second))
+	if cerr != nil {
+		return nil, fmt.Errorf("connecting to NATS at %s: %w", cfg.NATS.URL, cerr)
+	}
+	return natsql.NewWithNATS(nc, cfg)
+}
+
+func createSourceStreams(ctx context.Context, eng *natsql.Engine, cfg *natsql.Config, logger *slog.Logger) {
+	if !cfg.NATS.Embedded && !createStreams {
+		logger.Warn("external mode: not creating source streams (use --create-streams to opt in)")
+		return
+	}
+	js, jserr := jetstream.New(eng.NC())
+	if jserr != nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, v := range cfg.Views {
+		if seen[v.SourceStream] {
+			continue
+		}
+		seen[v.SourceStream] = true
+
+		subjects := []string{v.SourceSubject}
+		if v.SourceSubject == "" {
+			subjects = []string{v.SourceStream + ".>"}
+		}
+
+		if !cfg.NATS.Embedded {
+			if _, err := js.Stream(ctx, v.SourceStream); err == nil {
+				logger.Info("source stream already exists, skipping", "stream", v.SourceStream)
+				continue
+			}
+		}
+
+		_, serr := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+			Name:     v.SourceStream,
+			Subjects: subjects,
+		})
+		if serr != nil {
+			logger.Warn("failed to create source stream", "stream", v.SourceStream, "error", serr)
+		} else {
+			logger.Info("created source stream", "stream", v.SourceStream, "subjects", subjects)
+		}
+	}
 }

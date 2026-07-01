@@ -176,33 +176,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 		t.Fatalf("did not receive DLQ message within timeout: %v", err)
 	}
 
-	// Check envelope
-	var envelope map[string]any
-	if err := json.Unmarshal(dlqMsg.Data, &envelope); err != nil {
-		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
-	}
-
-	if envelope["view_name"] != "dlq_test" {
-		t.Errorf("view_name = %v, want %q", envelope["view_name"], "dlq_test")
-	}
-	if _, ok := envelope["error"]; !ok {
-		t.Error("DLQ envelope missing 'error' field")
-	}
-	if _, ok := envelope["timestamp"]; !ok {
-		t.Error("DLQ envelope missing 'timestamp' field")
-	}
-	origB64, ok := envelope["original_message_b64"].(string)
-	if !ok || origB64 == "" {
-		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v", envelope["original_message_b64"], envelope["original_message_b64"])
-	}
-	// Decode and verify original bytes
-	origBytes, err := base64.StdEncoding.DecodeString(origB64)
-	if err != nil {
-		t.Fatalf("failed to decode original_message_b64: %v", err)
-	}
-	if string(origBytes) != "{invalid json" {
-		t.Errorf("original_message_b64 decoded to %q, want %q", string(origBytes), "{invalid json")
-	}
+	verifyDLQEnvelope(t, dlqMsg.Data, "dlq_test", "{invalid json")
 
 	// Clean shutdown
 	matCancel()
@@ -1037,3 +1011,33 @@ func (m *fakeMsg) NakWithDelay(delay time.Duration) error { return nil }
 func (m *fakeMsg) InProgress() error                      { return nil }
 func (m *fakeMsg) Term() error                            { return nil }
 func (m *fakeMsg) TermWithReason(reason string) error     { return nil }
+
+func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal string) {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal DLQ envelope failed: %v", err)
+	}
+	if envelope["view_name"] != wantViewName {
+		t.Errorf("view_name = %v, want %q", envelope["view_name"], wantViewName)
+	}
+	if _, ok := envelope["error"]; !ok {
+		t.Error("DLQ envelope missing 'error' field")
+	}
+	if _, ok := envelope["timestamp"]; !ok {
+		t.Error("DLQ envelope missing 'timestamp' field")
+	}
+	origB64, ok := envelope["original_message_b64"].(string)
+	if !ok || origB64 == "" {
+		t.Errorf("DLQ envelope missing or empty 'original_message_b64', got %T=%v",
+			envelope["original_message_b64"], envelope["original_message_b64"])
+		return
+	}
+	origBytes, err := base64.StdEncoding.DecodeString(origB64)
+	if err != nil {
+		t.Fatalf("failed to decode original_message_b64: %v", err)
+	}
+	if string(origBytes) != wantOriginal {
+		t.Errorf("original_message_b64 decoded to %q, want %q", string(origBytes), wantOriginal)
+	}
+}

@@ -11,8 +11,7 @@ import (
 // Parse parses a SQL SELECT statement and returns a ValidatedQuery.
 // Uses vitess sqlparser for SQL parsing.
 func Parse(sql string) (*ValidatedQuery, error) {
-	parser := sqlparser.NewTestParser()
-	stmt, err := parser.Parse(sql)
+	stmt, err := sqlparser.NewTestParser().Parse(sql)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
@@ -22,71 +21,77 @@ func Parse(sql string) (*ValidatedQuery, error) {
 		return nil, errors.New("only SELECT statements are supported")
 	}
 
-	// Extract the FROM table (single table only for v1)
+	tableName, err := extractTableName(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := rejectUnsupported(sel); err != nil {
+		return nil, err
+	}
+
+	q := &ValidatedQuery{From: tableName}
+
+	if sel.SelectExprs != nil {
+		q.Select, err = extractSelectExprs(sel.SelectExprs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if sel.Where == nil {
+		return nil, errors.New("WHERE clause is required")
+	}
+	q.Where, err = extractConditions(sel.Where.Expr)
+	if err != nil {
+		return nil, err
+	}
+
+	if sel.Limit != nil {
+		q.Limit, err = extractLimit(sel.Limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return q, nil
+}
+
+func extractTableName(sel *sqlparser.Select) (string, error) {
 	if len(sel.From) == 0 {
-		return nil, errors.New("FROM clause is required")
+		return "", errors.New("FROM clause is required")
 	}
 	if len(sel.From) > 1 {
-		return nil, errors.New("only single-table SELECT is supported")
+		return "", errors.New("only single-table SELECT is supported")
 	}
 
 	aliased, ok := sel.From[0].(*sqlparser.AliasedTableExpr)
 	if !ok {
-		return nil, errors.New("only simple SELECT FROM view is supported")
+		return "", errors.New("only simple SELECT FROM view is supported")
 	}
 
 	tblName, ok := aliased.Expr.(sqlparser.TableName)
 	if !ok {
-		return nil, errors.New("only simple SELECT FROM view is supported")
+		return "", errors.New("only simple SELECT FROM view is supported")
 	}
 
-	// Reject unsupported SQL constructs (FND-02)
+	return tblName.Name.String(), nil
+}
+
+func rejectUnsupported(sel *sqlparser.Select) error {
 	if sel.Distinct {
-		return nil, errors.New("unsupported: DISTINCT is not supported in v1")
+		return errors.New("unsupported: DISTINCT is not supported in v1")
 	}
 	if sel.OrderBy != nil {
-		return nil, errors.New("unsupported: ORDER BY is not supported in v1")
+		return errors.New("unsupported: ORDER BY is not supported in v1")
 	}
 	if sel.GroupBy != nil {
-		return nil, errors.New("unsupported: GROUP BY is not supported in v1")
+		return errors.New("unsupported: GROUP BY is not supported in v1")
 	}
 	if sel.Having != nil {
-		return nil, errors.New("unsupported: HAVING is not supported in v1")
+		return errors.New("unsupported: HAVING is not supported in v1")
 	}
-
-	q := &ValidatedQuery{
-		From: tblName.Name.String(),
-	}
-
-	// Extract SELECT expressions (after rejection checks)
-	if sel.SelectExprs != nil {
-		var selectErr error
-		q.Select, selectErr = extractSelectExprs(sel.SelectExprs)
-		if selectErr != nil {
-			return nil, selectErr
-		}
-	}
-
-	// Extract WHERE clause
-	if sel.Where == nil {
-		return nil, errors.New("WHERE clause is required")
-	}
-	conditions, err := extractConditions(sel.Where.Expr)
-	if err != nil {
-		return nil, err
-	}
-	q.Where = conditions
-
-	// Extract LIMIT
-	if sel.Limit != nil {
-		limit, err := extractLimit(sel.Limit)
-		if err != nil {
-			return nil, err
-		}
-		q.Limit = limit
-	}
-
-	return q, nil
+	return nil
 }
 
 // extractSelectExprs converts vitess SelectExprs to column name slice.

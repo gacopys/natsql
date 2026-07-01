@@ -230,24 +230,45 @@ func (e *Engine) Start(ctx context.Context) error {
 		return ErrAlreadyStarted
 	}
 
-	// 1. Initialize KV bucket (local — assigned to e.kv only on success)
 	kvb, err := kv.InitBucket(ctx, e.js, 1)
 	if err != nil {
 		return fmt.Errorf("initializing KV bucket: %w", err)
 	}
 
-	// 2. Create DLQ stream
 	if _, err := materialize.EnsureDLQStream(ctx, e.js); err != nil {
 		return fmt.Errorf("creating DLQ stream: %w", err)
 	}
 
-	// 3. Create context for lifecycle management
 	ctx, e.cancel = context.WithCancel(ctx)
 
-	// 4. Create drain channels and launch materializers
+	drainChans, err := e.startViewMaterializers(ctx, kvb)
+	if err != nil {
+		return err
+	}
+
+	if e.nc != nil {
+		sub, err := transport.RegisterNATSHandler(e.nc, e)
+		if err != nil {
+			return fmt.Errorf("failed to register NATS query handler: %w", err)
+		}
+		e.natsSub = sub
+		e.logger.Info("NATS query handler registered", "subject", "natsql.query")
+	}
+
+	if err := e.startHTTPServer(); err != nil {
+		return err
+	}
+
+	e.kv = kvb
+	e.drainChans = drainChans
+	e.started = true
+	e.logger.Info("engine started", "view_count", len(e.cfg.Views))
+	return nil
+}
+
+func (e *Engine) startViewMaterializers(ctx context.Context, kvb jetstream.KeyValue) ([]chan struct{}, error) {
 	drainChans := make([]chan struct{}, len(e.cfg.Views))
 
-	// Startup error channel for materializer consumer setup (D-15, CR-07)
 	type matResult struct {
 		name string
 		err  error
@@ -278,11 +299,6 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Info("started materializer", "view", vc.Name, "source_stream", vc.SourceStream)
 	}
 
-	// Wait briefly for materializers to pass consumer setup (D-15, CR-07)
-	// Run() returns error immediately if consumer setup fails.
-	// If setup succeeds, it blocks forever in the message loop.
-	// NOTE: time.After channel fires once; we use a labeled loop and break
-	// on timeout to avoid blocking on subsequent iterations.
 	afterStartup := time.After(500 * time.Millisecond)
 	var startupErrors int
 startupLoop:
@@ -296,20 +312,13 @@ startupLoop:
 		}
 	}
 	if startupErrors > 0 {
-		return fmt.Errorf("%d materializer(s) failed to start", startupErrors)
+		return nil, fmt.Errorf("%d materializer(s) failed to start", startupErrors)
 	}
 
-	// 5. Register NATS query handler (if NATS connection is available — D-14 fatal)
-	if e.nc != nil {
-		sub, err := transport.RegisterNATSHandler(e.nc, e)
-		if err != nil {
-			return fmt.Errorf("failed to register NATS query handler: %w", err)
-		}
-		e.natsSub = sub
-		e.logger.Info("NATS query handler registered", "subject", "natsql.query")
-	}
+	return drainChans, nil
+}
 
-	// 6. Start HTTP query server — bind synchronously, serve in goroutine (per D-15, CR-06/CR-07)
+func (e *Engine) startHTTPServer() error {
 	router := transport.NewRouter()
 	transport.RegisterHTTPHandler(router, e)
 
@@ -334,11 +343,6 @@ startupLoop:
 		}
 	}(listener, httpServer, e.logger)
 
-	// All initialization succeeded — set engine state
-	e.kv = kvb
-	e.drainChans = drainChans
-	e.started = true
-	e.logger.Info("engine started", "view_count", len(e.cfg.Views))
 	return nil
 }
 
