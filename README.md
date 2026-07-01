@@ -12,6 +12,8 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gacopys/natsql)](go.mod)
 [![Latest tag](https://img.shields.io/github/v/tag/gacopys/natsql)](https://github.com/gacopys/natsql/tags)
 [![GitHub stars](https://img.shields.io/github/stars/gacopys/natsql?style=social)](https://github.com/gacopys/natsql)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-donate-yellow.svg)](https://buymeacoffee.com/gacopys)
+[![PayPal](https://img.shields.io/badge/PayPal-donate-blue.svg)](https://paypal.me/gacopys)
 
 > Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.
 
