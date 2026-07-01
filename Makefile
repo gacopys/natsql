@@ -1,4 +1,4 @@
-.PHONY: all build lint lint-fix vuln test coverage examples gocyclo
+.PHONY: all build lint lint-fix vuln test coverage examples gocyclo dupl
 
 all: lint build test coverage examples
 
@@ -56,3 +56,13 @@ gocyclo: gocyclo-install
 		echo "  No functions analyzed"; \
 	fi; \
 	exit $$status
+
+ARTDUPL := $(shell go env GOPATH)/bin/art-dupl
+
+.PHONY: dupl-install
+dupl-install:
+	@which $(ARTDUPL) >/dev/null 2>&1 || go install github.com/LarsArtmann/art-dupl/cmd/art-dupl@v0.2.0
+
+dupl: dupl-install
+	@echo "━━━ Code duplication report (production code, 50-token threshold) ━━━"
+	@$(ARTDUPL) -t 50 --exclude-pattern '*_test.go' internal/ cmd/ *.go 2>&1

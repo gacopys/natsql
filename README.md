@@ -5,9 +5,9 @@
 [![Build](https://github.com/gacopys/natsql/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/build.yml)
 [![Test](https://github.com/gacopys/natsql/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/test.yml)
 [![Examples](https://github.com/gacopys/natsql/actions/workflows/examples.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/examples.yml)
-[![gocyclo](https://github.com/gacopys/natsql/actions/workflows/cyclo.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/cyclo.yml)
+[![Cyclomatic Complexity](https://github.com/gacopys/natsql/actions/workflows/cyclo.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/cyclo.yml)
+[![Code Duplication](https://github.com/gacopys/natsql/actions/workflows/dupl.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/dupl.yml)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/gacopys/natsql)](https://goreportcard.com/report/github.com/gacopys/natsql)
 [![License](https://img.shields.io/github/license/gacopys/natsql)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gacopys/natsql)](go.mod)
 [![Latest tag](https://img.shields.io/github/v/tag/gacopys/natsql)](https://github.com/gacopys/natsql/tags)
