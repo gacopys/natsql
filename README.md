@@ -1,5 +1,7 @@
 # NATSQL — The NATS-Native Materialized View Engine
 
+[![CI](https://github.com/gacopys/natsql/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/ci.yml)
+
 **Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.**
 
 ```
