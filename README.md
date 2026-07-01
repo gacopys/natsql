@@ -311,6 +311,8 @@ cd examples/01-hello-natsql && go run .
 - **Transport**: Routes queries from NATS request-reply, HTTP, or in-process Go calls through the same engine.
 
 > **Full architecture reference:** See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the authoritative component map, data flow, storage layout, lifecycle, invariants, and extension points.
+>
+> **API specification:** See [`openapi.yaml`](openapi.yaml) for the HTTP query endpoint — rendered interactively by GitHub.
 
 ---
 
