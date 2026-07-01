@@ -32,7 +32,7 @@ type httpAdapter struct {
 // query-time failures are reported via the `error` field of the JSON envelope
 // (mirrors the NATS request-reply path).
 //
-// (POST /api/v1/query)
+// (POST /api/v1/query).
 func (a *httpAdapter) RunQuery(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
