@@ -6,6 +6,11 @@
 [![Test](https://github.com/gacopys/natsql/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/test.yml)
 [![Examples](https://github.com/gacopys/natsql/actions/workflows/examples.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/examples.yml)
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/gacopys/natsql)](https://goreportcard.com/report/github.com/gacopys/natsql)
+[![License](https://img.shields.io/github/license/gacopys/natsql)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/gacopys/natsql)](go.mod)
+[![Latest tag](https://img.shields.io/github/v/tag/gacopys/natsql)](https://github.com/gacopys/natsql/tags)
+
 **Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.**
 
 ```
