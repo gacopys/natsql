@@ -55,7 +55,10 @@ func main() {
 
 	// ── Step 2: Create source stream *before* starting engine ──────
 	nc := eng.NC()
-	js, _ := jetstream.New(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("JetStream: %v", err)
+	}
 
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "events",
@@ -94,7 +97,9 @@ func main() {
 		log.Fatalf("HTTP query: %v", err)
 	}
 	var httpResult map[string]any
-	json.NewDecoder(rsp.Body).Decode(&httpResult)
+	if err := json.NewDecoder(rsp.Body).Decode(&httpResult); err != nil {
+		log.Fatalf("Decode HTTP response: %v", err)
+	}
 	rsp.Body.Close()
 	fmt.Printf("✓ HTTP query: %+v\n", httpResult)
 

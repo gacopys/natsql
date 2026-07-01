@@ -1,3 +1,14 @@
+// Package kv provides NATS JetStream Key-Value operations for natsql.
+//
+// This package handles schema storage, row read/write, and canonical
+// primary-key encoding (BuildPkKey). All state is stored in a single
+// JetStream KV bucket.
+//
+// Known limitations:
+//   - Tombstone/delete semantics are not yet supported (planned for v2).
+//     Rows cannot be removed from the materialized view once written.
+//     A delete mode (operation field, subject convention, or tombstone
+//     predicate) will be designed and implemented in a future release.
 package kv
 
 import (

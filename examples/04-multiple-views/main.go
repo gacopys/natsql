@@ -61,10 +61,17 @@ func main() {
 
 	// Create streams before starting engine
 	nc := eng.NC()
-	js, _ := jetstream.New(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("JetStream: %v", err)
+	}
 
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "user-stream", Subjects: []string{"users.>"}})
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "product-stream", Subjects: []string{"products.>"}})
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "user-stream", Subjects: []string{"users.>"}}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "product-stream", Subjects: []string{"products.>"}}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
 
 	if err := eng.Start(ctx); err != nil {
 		log.Fatalf("Start: %v", err)
@@ -76,7 +83,9 @@ func main() {
 		`{"id": "u1", "name": "Alice", "role": "admin"}`,
 		`{"id": "u2", "name": "Bob", "role": "viewer"}`,
 	} {
-		js.Publish(ctx, "users.created", []byte(u))
+		if _, err := js.Publish(ctx, "users.created", []byte(u)); err != nil {
+			log.Fatalf("Publish user: %v", err)
+		}
 	}
 	fmt.Println("  Published 2 user events")
 
@@ -86,7 +95,9 @@ func main() {
 		`{"sku": "SKU-002", "title": "Gadget", "price": 24.99, "in_stock": false}`,
 		`{"sku": "SKU-003", "title": "Doohickey", "price": 49.99, "in_stock": true}`,
 	} {
-		js.Publish(ctx, "products.created", []byte(p))
+		if _, err := js.Publish(ctx, "products.created", []byte(p)); err != nil {
+			log.Fatalf("Publish product: %v", err)
+		}
 	}
 	fmt.Println("  Published 3 product events\n")
 

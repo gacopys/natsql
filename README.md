@@ -82,7 +82,14 @@ res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'abc123'")
 | Full scan queries (non-PK WHERE) | **Shipped** |
 | Range scans (`>`, `<`) | Planned |
 | Secondary indexes | Planned |
-| LIMIT support | Planned |
+| LIMIT support | **Shipped** |
+| `.` / `$.` prefix notation in field paths | **Shipped** |
+
+### Known Limitations
+
+- **Delete/Tombstone semantics:** Rows cannot be deleted from the materialized view once written. This is a deliberate v1 omission — a delete mode (operation field, subject convention, or tombstone predicate) is planned for v2. See `internal/kv/kv.go` package docs for details.
+- **Range scans:** `WHERE` with `>` or `<` operators performs a client-side filter over a full table scan. Dedicated index-backed range scans are planned for v2.
+- **Secondary indexes:** Only primary-key columns are indexed. Queries on non-PK columns perform a full table scan.
 
 ---
 

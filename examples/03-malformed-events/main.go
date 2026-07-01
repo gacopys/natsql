@@ -54,11 +54,16 @@ func main() {
 
 	// Create stream before starting engine
 	nc := eng.NC()
-	js, _ := jetstream.New(nc)
-	js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("JetStream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "events",
 		Subjects: []string{"events.>"},
-	})
+	}); err != nil {
+		log.Fatalf("CreateStream: %v", err)
+	}
 
 	if err := eng.Start(ctx); err != nil {
 		log.Fatalf("Start: %v", err)

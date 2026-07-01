@@ -68,7 +68,10 @@ func main() {
 	defer eng.Close()
 
 	nc := eng.NC()
-	js, _ := jetstream.New(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("JetStream: %v", err)
+	}
 
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "events",
