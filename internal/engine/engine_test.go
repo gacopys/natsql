@@ -813,8 +813,14 @@ func TestEngineQueryPKLookup(t *testing.T) {
 	if result.Results[0]["name"] != "Alice" {
 		t.Errorf("name = %v, want %q", result.Results[0]["name"], "Alice")
 	}
-	if result.Results[0]["age"] != float64(30) {
-		t.Errorf("age = %v, want 30", result.Results[0]["age"])
+	// age is decoded with UseNumber (D-07/D-08) for precision, so it surfaces
+	// as json.Number, not float64.
+	ageNum, ok := result.Results[0]["age"].(json.Number)
+	if !ok {
+		t.Fatalf("age type = %T, want json.Number", result.Results[0]["age"])
+	}
+	if ageNum.String() != "30" {
+		t.Errorf("age = %s, want 30", ageNum.String())
 	}
 }
 

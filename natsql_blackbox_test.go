@@ -174,7 +174,7 @@ func TestBlackBox_Queries(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
+	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
 	}
@@ -475,9 +475,13 @@ func TestBlackBox_Queries(t *testing.T) {
 		if _, ok := row["user_id"].(string); !ok {
 			t.Errorf("user_id type = %T, want string", row["user_id"])
 		}
-		// age is a number (float64 from JSON)
-		if _, ok := row["age"].(float64); !ok {
-			t.Errorf("age type = %T, want float64", row["age"])
+		// age is a number — decoded with UseNumber (D-07/D-08) for precision,
+		// so it surfaces as json.Number, which still serializes as a JSON number.
+		ageNum, ok := row["age"].(json.Number)
+		if !ok {
+			t.Errorf("age type = %T, want json.Number", row["age"])
+		} else if ageNum.String() != "25" {
+			t.Errorf("age = %s, want 25", ageNum.String())
 		}
 		// active is a boolean
 		if _, ok := row["active"].(bool); !ok {
@@ -536,7 +540,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 				Name:         "orders",
 				SourceStream: streamName,
 				KeyFields:    []string{"org_id", "order_id"},
-				KeySeparator: "|",
+				KeySeparator: "/",
 				Columns: []natsql.ColumnConfig{
 					{Name: "org_id", From: "org_id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 					{Name: "order_id", From: "order_id", Type: natsql.ColumnTypeString, PrimaryKey: true},
@@ -548,7 +552,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
+	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
 	}

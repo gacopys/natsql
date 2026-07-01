@@ -32,7 +32,7 @@ func BuildPlan(q *ValidatedQuery, schema *kv.ViewSchema) (Plan, error) {
 		}
 		separator := schema.KeySeparator
 		if separator == "" {
-			separator = "|"
+			separator = "/" // must be a valid NATS KV key char; see kv.BuildPkKey
 		}
 
 		// Check for contradictory PK predicates (D-02)

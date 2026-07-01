@@ -203,8 +203,8 @@ func TestBuildSchema_DefaultSeparator(t *testing.T) {
 	if s.Name != "test" {
 		t.Errorf("Name = %q, want %q", s.Name, "test")
 	}
-	if s.KeySeparator != "|" {
-		t.Errorf("KeySeparator = %q, want %q", s.KeySeparator, "|")
+	if s.KeySeparator != "/" {
+		t.Errorf("KeySeparator = %q, want %q", s.KeySeparator, "/")
 	}
 	if len(s.Columns) != 3 {
 		t.Fatalf("got %d columns, want 3", len(s.Columns))

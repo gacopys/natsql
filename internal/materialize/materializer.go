@@ -116,7 +116,7 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 	// 3. Create writer
 	sep := viewCfg.KeySeparator
 	if sep == "" {
-		sep = "|"
+		sep = "/" // must be a valid NATS KV key char; see kv.BuildPkKey
 	}
 	writer := NewWriter(bucket, viewCfg.Name, sep)
 

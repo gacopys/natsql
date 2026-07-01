@@ -848,17 +848,26 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
-	time.Sleep(2 * time.Second) // allow processing
-
-	// Verify events were processed
-	for _, id := range []string{"hb1", "hb2"} {
-		entry, err := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{id}, "|"))
-		if err != nil {
-			t.Fatalf("Get(%q) failed: %v", id, err)
+	// Verify events were processed. Poll instead of a fixed sleep so the
+	// test is robust under parallel test load (go test ./...) where
+	// materialization latency is variable.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		hb1, err1 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb1"}, "|"))
+		hb2, err2 := kvb.Get(ctx, kv.BuildPkKey("seq_heartbeat_test", []string{"hb2"}, "|"))
+		if err1 == nil && hb1 != nil && err2 == nil && hb2 != nil {
+			break
 		}
-		if entry == nil {
-			t.Errorf("event %q was not materialized", id)
+		if time.Now().After(deadline) {
+			if err1 != nil {
+				t.Fatalf("Get(%q) failed: %v", "hb1", err1)
+			}
+			if err2 != nil {
+				t.Fatalf("Get(%q) failed: %v", "hb2", err2)
+			}
+			t.Fatal("events were not materialized within 15s")
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// Verify heartbeat logged (heartbeat interval is 60s, so we won't see one during the test)

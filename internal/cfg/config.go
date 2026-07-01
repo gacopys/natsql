@@ -168,6 +168,14 @@ func (cfg *Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("%s: at least one key_field is required", prefix))
 		}
 
+		// Validate key_separator: every char must be a valid NATS KV key
+		// character (valid set: [-/_=.a-zA-Z0-9]). An invalid separator
+		// produces unstoreable composite keys at runtime ("nats: invalid key").
+		// Empty is allowed (defaults to "/" in BuildSchema).
+		if v.KeySeparator != "" && !isValidKeySeparator(v.KeySeparator) {
+			errs = append(errs, fmt.Sprintf("%s: key_separator %q contains characters that are not valid in a NATS KV key (allowed: letters, digits, and - / _ . =)", prefix, v.KeySeparator))
+		}
+
 		if len(v.Columns) == 0 {
 			errs = append(errs, fmt.Sprintf("%s: at least one column is required", prefix))
 		}
@@ -253,11 +261,31 @@ func (cfg *Config) Validate() error {
 	return fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
 }
 
+// isValidKeySeparator reports whether every character in sep is a valid NATS KV
+// key character. NATS KV keys must match ^[-/_=.a-zA-Z0-9]+$.
+func isValidKeySeparator(sep string) bool {
+	for _, r := range sep {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '/' || r == '_' || r == '.' || r == '=':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // BuildSchema derives an immutable ViewSchema from the ViewConfig.
 func (vc *ViewConfig) BuildSchema() *kv.ViewSchema {
 	sep := vc.KeySeparator
 	if sep == "" {
-		sep = "|"
+		// Default separator must be a valid NATS KV key character
+		// (valid set: [-/_=.a-zA-Z0-9]). '/' is chosen because it is
+		// already escaped in PK part values by SanitizePK (→ "_s"),
+		// so composite keys cannot collide with embedded slashes.
+		sep = "/"
 	}
 
 	columns := make([]kv.ColumnSchema, len(vc.Columns))

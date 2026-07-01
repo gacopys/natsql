@@ -3,6 +3,7 @@ package natsql
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,7 +102,7 @@ views:
     key_fields:
       - tenant_id
       - event_id
-    key_separator: "::"
+    key_separator: "."
     columns:
       - name: tenant_id
         from: $.tenant_id
@@ -118,8 +119,8 @@ views:
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
 	v := cfg.Views[0]
-	if v.KeySeparator != "::" {
-		t.Errorf("expected key_separator '::', got %q", v.KeySeparator)
+	if v.KeySeparator != "." {
+		t.Errorf("expected key_separator '.', got %q", v.KeySeparator)
 	}
 	if len(v.KeyFields) != 2 {
 		t.Fatalf("expected 2 key_fields, got %d", len(v.KeyFields))
@@ -197,7 +198,7 @@ func TestLoadConfig_JSONFormat(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_IndexesField_ParsesButIgnored(t *testing.T) {
+func TestLoadConfig_IndexesField_Rejected(t *testing.T) {
 	content := `
 views:
   - name: users
@@ -214,15 +215,12 @@ views:
       - column: age
 `
 	path := writeTempFile(t, "with_indexes.yaml", content)
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig returned error: %v", err)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatalf("LoadConfig succeeded; expected validation error rejecting indexes")
 	}
-	if len(cfg.Views[0].Indexes) != 2 {
-		t.Fatalf("expected 2 indexes, got %d", len(cfg.Views[0].Indexes))
-	}
-	if cfg.Views[0].Indexes[0].Column != "name" {
-		t.Errorf("expected index column 'name', got %q", cfg.Views[0].Indexes[0].Column)
+	if !strings.Contains(err.Error(), "secondary indexes are not yet supported") {
+		t.Fatalf("expected error about secondary indexes, got: %v", err)
 	}
 }
 

@@ -12,14 +12,22 @@ import (
 
 // StartEmbeddedNATS starts an embedded NATS server for testing.
 // Returns a connected NATS client and JetStream handle.
-// The server and connection are automatically cleaned up on test completion.
+// The server, connection, and isolated JetStream store directory are
+// automatically cleaned up on test completion.
 func StartEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
+
+	// Use a unique, per-test store directory. If left empty, the NATS
+	// server defaults to a fixed path (/tmp/nats/jetstream), which causes
+	// JetStream state (streams, KV buckets, durable consumers) to leak
+	// across tests and packages, producing flaky cross-pollution.
+	storeDir := t.TempDir()
 
 	srv, err := natsserver.NewServer(&natsserver.Options{
 		Host:      "127.0.0.1",
 		Port:      -1,
 		JetStream: true,
+		StoreDir:  storeDir,
 		NoLog:     true,
 		NoSigs:    true,
 	})

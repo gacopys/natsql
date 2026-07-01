@@ -94,9 +94,11 @@ func WithHTTPServer(addr string) Option {
 }
 
 // WithQueryPort directly sets the HTTP query server port.
+// A port of 0 lets the OS choose a free random port, which avoids port
+// conflicts when multiple engines run concurrently (e.g. in parallel tests).
 func WithQueryPort(port int) Option {
 	return func(e *Engine) {
-		if port > 0 {
+		if port >= 0 {
 			e.queryPort = port
 		}
 	}
