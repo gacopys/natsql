@@ -2,7 +2,7 @@
 
 all: lint build test coverage examples
 
-build:
+build: generate
 	go build ./...
 
 lint:
