@@ -1,56 +1,44 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.2
-milestone_name: milestone
-status: executing
-stopped_at: Phase 10 context gathered
-last_updated: "2026-07-01T10:55:22.143Z"
-last_activity: 2026-07-01 -- Phase --phase execution started
+milestone_name: Code Review Remediation
+status: completed
+stopped_at: Milestone v1.2 shipped
+last_updated: "2026-07-01T16:05:00.000Z"
+last_activity: 2026-07-01 -- v1.2 milestone completed
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 12
-  completed_plans: 9
-  percent: 75
+  completed_plans: 12
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-31)
+See: .planning/PROJECT.md (updated 2026-07-01 after v1.2)
 
 **Core value:** A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
-**Current focus:** Phase --phase — 11
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: --phase (11) — EXECUTING
-Plan: 1 of --name
-Status: Executing Phase --phase
-Last activity: 2026-07-01 -- Phase --phase execution started
-
-Progress: [░░░░░░░░░░] 0%
+Status: ✅ v1.2 shipped (Phases 8-11 complete)
+Last activity: 2026-07-01 — v1.2 milestone completed
 
 ## Performance Metrics
-
-**Velocity:**
-
-- Total plans completed: 9
-- Average duration: —
-- Total execution time: —
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| — | — | — | — |
 | 08 | 4 | - | - |
 | 09 | 3 | - | - |
 | 10 | 2 | - | - |
-
-*Updated after each plan completion*
+| 11 | 3 | - | - |
 
 ## Accumulated Context
 
@@ -64,16 +52,9 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 10 depends on Phase 8 | Query engine needs canonical PK encoder (FND-01) from Foundation | ✓ Set |
 | Phase 11 after all behavioral phases | Cleanup should come after all behavioral changes are verified and merged | ✓ Set |
 
-### Pending Todos
+### Tech Debt Deferred to v2
 
-- Plan and execute Phase 8: Verification & Foundation
-
-### Blockers/Concerns
-
-None yet.
-
-## Session Continuity
-
-Last session: 2026-06-01T22:06:28.197Z
-Stopped at: Phase 10 context gathered
-Resume file: .planning/phases/10-query-engine-transport/10-CONTEXT.md
+- Range scans (>, <, >=, <=)
+- Secondary indexes on non-PK columns
+- Delete/tombstone semantics for materialized rows
+- Per-view KV buckets for full isolation
