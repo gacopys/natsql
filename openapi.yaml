@@ -1,0 +1,104 @@
+openapi: 3.0.3
+info:
+  title: natsql query API
+  version: 1.0.0
+  description: >
+    Read-only SQL query API for the natsql materialized view engine.
+    A single endpoint accepts a `SELECT` statement as JSON and returns the
+    current materialized state over HTTP (or the equivalent NATS subject).
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default HTTP query server binding.
+paths:
+  /api/v1/query:
+    post:
+      operationId: RunQuery
+      summary: Execute a read-only SQL query against the materialized views.
+      description: >
+        Parses, validates, plans and executes a SELECT statement (see
+        SQL_DIALECT.md for the supported v1 subset) and returns the matching
+        rows or an error envelope. The HTTP body MUST be a JSON object with a
+        single `sql` field; the body is capped at 1 MiB and trailing data after
+        the JSON document is rejected with HTTP 400. Oversized bodies are
+        rejected with HTTP 413.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+            examples:
+              simple:
+                value:
+                  sql: "SELECT * FROM users WHERE id = 'u1'"
+      responses:
+        "200":
+          description: >
+            The query was parsed and executed. Check the `error` field of the
+            body for query-time failures (parse errors, unknown views, etc).
+            The HTTP status is always 200 for a syntactically valid request
+            body, mirroring the NATS request-reply envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+              examples:
+                rows:
+                  value:
+                    results:
+                      - id: "u1"
+                        name: "Alice"
+                    error: null
+                empty:
+                  value:
+                    results: []
+                    error: null
+                sqlError:
+                  value:
+                    results: null
+                    error: "unknown view: users"
+        "400":
+          description: The request body was not valid JSON or contained trailing data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "413":
+          description: The request body exceeded the 1 MiB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+components:
+  schemas:
+    QueryRequest:
+      type: object
+      description: The JSON body for POST /api/v1/query.
+      required:
+        - sql
+      additionalProperties: false
+      properties:
+        sql:
+          type: string
+          description: A single SELECT statement (no DML, no multi-statement).
+          minLength: 1
+    QueryResult:
+      type: object
+      description: >
+        The JSON response envelope returned for every query. Identical to the
+        NATS request-reply envelope (D-29). `results` is null on error; `error`
+        is null on success.
+      properties:
+        results:
+          type: array
+          description: >
+            Matching rows. Each row is an arbitrary JSON object keyed by column
+            name. Order is unspecified. null when an error occurred.
+          items:
+            type: object
+            additionalProperties: true
+          nullable: true
+        error:
+          type: string
+          description: Human-readable error message, or null on success.
+          nullable: true

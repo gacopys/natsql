@@ -1,0 +1,17 @@
+# oapi-codegen configuration for the natsql chi server interface.
+#
+# Regenerate with: `make generate`.
+# Spec: openapi.yaml
+# Output: internal/transport/oapi/gen.go
+package: oapi
+generate:
+  models: true
+  chi-server: true
+  embedded-spec: false
+  strict-server: false
+  client: false
+output: internal/transport/oapi/gen.go
+output-options:
+  skip-prune: true
+compatibility:
+  always-prefix-enum-values: true
