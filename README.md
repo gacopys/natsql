@@ -1,6 +1,9 @@
 # NATSQL — The NATS-Native Materialized View Engine
 
-[![CI](https://github.com/gacopys/natsql/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/ci.yml)
+[![Lint](https://github.com/gacopys/natsql/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/lint.yml)
+[![Vulnerability](https://github.com/gacopys/natsql/actions/workflows/vulnerability.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/vulnerability.yml)
+[![Build](https://github.com/gacopys/natsql/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/build.yml)
+[![Test](https://github.com/gacopys/natsql/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/test.yml)
 [![Examples](https://github.com/gacopys/natsql/actions/workflows/examples.yml/badge.svg?branch=master)](https://github.com/gacopys/natsql/actions/workflows/examples.yml)
 
 **Query your NATS JetStream state with SQL. Zero infrastructure beyond NATS.**
