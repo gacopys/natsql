@@ -27,9 +27,10 @@ type httpAdapter struct {
 	handler QueryHandler
 }
 
-// RunQuery handles POST /api/v1/query. The HTTP status is always 200 for a
-// syntactically valid request body — query-time failures are reported via the
-// `error` field of the JSON envelope (mirrors the NATS request-reply path).
+// RunQuery handles POST /api/v1/query.
+// The HTTP status is always 200 for a syntactically valid request body —
+// query-time failures are reported via the `error` field of the JSON envelope
+// (mirrors the NATS request-reply path).
 //
 // (POST /api/v1/query)
 func (a *httpAdapter) RunQuery(w http.ResponseWriter, r *http.Request) {
