@@ -154,18 +154,18 @@ func (cfg *Config) Validate() error {
 		prefix := fmt.Sprintf("views[%d]", i)
 
 		if v.Name == "" {
-			errs = append(errs, fmt.Sprintf("%s: name is required", prefix))
+			errs = append(errs, prefix+": name is required")
 		} else if viewNames[v.Name] {
 			errs = append(errs, fmt.Sprintf("%s: duplicate view name %q", prefix, v.Name))
 		}
 		viewNames[v.Name] = true
 
 		if v.SourceStream == "" {
-			errs = append(errs, fmt.Sprintf("%s: source_stream is required", prefix))
+			errs = append(errs, prefix+": source_stream is required")
 		}
 
 		if len(v.KeyFields) == 0 {
-			errs = append(errs, fmt.Sprintf("%s: at least one key_field is required", prefix))
+			errs = append(errs, prefix+": at least one key_field is required")
 		}
 
 		// Validate key_separator: every char must be a valid NATS KV key
@@ -177,7 +177,7 @@ func (cfg *Config) Validate() error {
 		}
 
 		if len(v.Columns) == 0 {
-			errs = append(errs, fmt.Sprintf("%s: at least one column is required", prefix))
+			errs = append(errs, prefix+": at least one column is required")
 		}
 
 		hasPK := false
@@ -185,7 +185,7 @@ func (cfg *Config) Validate() error {
 			colPrefix := fmt.Sprintf("%s.columns[%d]", prefix, j)
 
 			if c.Name == "" {
-				errs = append(errs, fmt.Sprintf("%s: column name is required", colPrefix))
+				errs = append(errs, colPrefix+": column name is required")
 			}
 
 			if c.From == "" {
@@ -202,7 +202,7 @@ func (cfg *Config) Validate() error {
 		}
 
 		if !hasPK {
-			errs = append(errs, fmt.Sprintf("%s: at least one column must have primary_key=true", prefix))
+			errs = append(errs, prefix+": at least one column must have primary_key=true")
 		}
 
 		// CR-08 / FND-03: Cross-validate key_fields and primary_key columns

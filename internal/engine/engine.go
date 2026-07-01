@@ -286,7 +286,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	afterStartup := time.After(500 * time.Millisecond)
 	var startupErrors int
 startupLoop:
-	for i := 0; i < len(e.cfg.Views); i++ {
+	for range len(e.cfg.Views) {
 		select {
 		case result := <-startupCh:
 			startupErrors++

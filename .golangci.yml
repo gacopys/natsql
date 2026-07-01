@@ -1,6 +1,15 @@
 run:
   timeout: 3m
+  go: "1.26"
   modules-download-mode: readonly
+
+output:
+  formats:
+    - format: colored-line-number
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 linters:
   enable:
@@ -14,40 +23,41 @@ linters:
     - unused         # unused code detection
 
     # additional bug/quality detectors:
-    - asasalint       # variadic ...any in front of ...any
-    - bodyclose       # unclosed HTTP response bodies
-    - copyloopvar     # loop variable copies (Go 1.22+ capture semantics)
-    - durationcheck   # suspicious time.Duration multiplications
-    - errchkjson      # unchecked JSON marshal errors in type switches
-    - errname         # error variable naming conventions
-    - errorlint       # error wrapping and comparison
-    - fatcontext      # context.Value chaining in structs
-    - gci             # import ordering and grouping
-    - gofumpt         # strict gofmt (replaces gofmt)
-    - gosec           # security-sensitive code patterns
-    - intrange        # Go 1.22+ integer range loop simplifications
-    - misspell        # US English spelling
-    - musttag         # missing struct tags for serialization
-    - nakedret        # naked (bare) returns
-    - nilerr          # functions that return nil error after handling an error
-    - noctx           # net/http requests without context
-    - nolintlint      # malformed //nolint directives
-    - perfsprint      # sprintf that can be replaced with faster alternatives
-    - predeclared     # shadowed Go predeclared identifiers
-    - sloglint        # structured logging best practices
-    - stylecheck      # Go style (beyond staticcheck)
-    - tagalign        # struct tag alignment
-    - testifylint     # testify assertion usage
-    - thelper         # test helper signatures and naming
-    - unconvert       # unnecessary type conversions
-    - unparam         # unused function parameters
-    - usestdlibvars   # standard library constants and variables
-    - whitespace      # blank lines around control flow
-    - wrapcheck       # error return value wrapping consistency
+    - asasalint                  # variadic ...any in front of ...any
+    - bodyclose                  # unclosed HTTP response bodies
+    - copyloopvar                # loop variable copies (Go 1.22+ capture semantics)
+    - durationcheck              # suspicious time.Duration multiplications
+    - errname                    # error variable naming conventions
+    - errorlint                  # error wrapping and comparison
+    - exhaustive                 # missing enum switch cases
+    - fatcontext                 # context.Value chaining in structs
+    - gci                        # import ordering and grouping
+    - gocheckcompilerdirectives  # validate //go:build / //go:generate directives
+    - gofumpt                    # strict gofmt
+    - gosec                      # security-sensitive code patterns
+    - intrange                   # Go 1.22+ integer range loop simplifications
+    - misspell                   # US English spelling
+    - musttag                    # missing struct tags for serialization
+    - nakedret                   # naked (bare) returns
+    - nilerr                     # functions that return nil error after handling an error
+    - nilnesserr                 # stricter nil-error analysis
+    - noctx                      # net/http requests without context
+    - nolintlint                 # malformed //nolint directives
+    - perfsprint                 # sprintf that can be replaced with faster alternatives
+    - predeclared                # shadowed Go predeclared identifiers
+    - sloglint                   # structured logging best practices
+    - unconvert                  # unnecessary type conversions
+    - unparam                    # unused function parameters
+    - usestdlibvars              # standard library constants and variables
+    - whitespace                 # blank lines around control flow
 
 linters-settings:
   errcheck:
     check-type-assertions: true
+
+  exhaustive:
+    check-generated: false
+    default-signifies-exhaustive: true
 
   gci:
     sections:
@@ -58,7 +68,6 @@ linters-settings:
 
   gofumpt:
     module-path: github.com/gacopys/natsql
-    extra-rules: true
 
   gosec:
     excludes:
@@ -75,16 +84,7 @@ linters-settings:
     sprintf1: true
 
   sloglint:
-    context: all
     no-mixed-args: true
-    no-global: "all"
-
-  stylecheck:
-    checks:
-      - all
-
-  testifylint:
-    enable-all: true
 
   usestdlibvars:
     constant-kind: true
@@ -100,16 +100,3 @@ linters-settings:
   whitespace:
     multi-if: true
     multi-func: true
-
-  wrapcheck:
-    ignoreSigs:
-      - .Errorf(
-      - errors.New(
-      - errors.Unwrap(
-      - .Wrap(
-      - .Wrapf(
-      - .WithMessage(
-      - .WithMessagef(
-    ignoreSigRegexps:
-      - \.Fatalf\(
-      - \.Fatal\(

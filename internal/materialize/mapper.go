@@ -3,6 +3,7 @@ package materialize
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,7 +21,7 @@ const maxNestingDepth = 8 // T-02-02: limit JSON path depth
 var (
 	// ErrMalformedEvent indicates an event cannot be processed
 	// and should be acked + sent to DLQ. Never blocks the stream.
-	ErrMalformedEvent = fmt.Errorf("malformed event")
+	ErrMalformedEvent = errors.New("malformed event")
 )
 
 // RowMutation represents the result of mapping one event to a row mutation.
@@ -42,10 +43,10 @@ type Mapper struct {
 // Returns an error if the config is nil or has no columns.
 func NewMapper(viewCfg *natsql.ViewConfig) (*Mapper, error) {
 	if viewCfg == nil {
-		return nil, fmt.Errorf("view config is nil")
+		return nil, errors.New("view config is nil")
 	}
 	if len(viewCfg.Columns) == 0 {
-		return nil, fmt.Errorf("view config has no columns")
+		return nil, errors.New("view config has no columns")
 	}
 
 	schema := viewCfg.BuildSchema()
@@ -64,7 +65,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	decoder := json.NewDecoder(bytes.NewReader(msg.Data()))
 	decoder.UseNumber()
 	if err := decoder.Decode(&data); err != nil {
-		return nil, fmt.Errorf("%w: invalid JSON: %v", ErrMalformedEvent, err)
+		return nil, fmt.Errorf("%w: invalid JSON: %w", ErrMalformedEvent, err)
 	}
 
 	// 2. Extract column values
@@ -72,12 +73,12 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	for _, col := range m.viewCfg.Columns {
 		val, err := extractNestedField(data, col.From)
 		if err != nil {
-			return nil, fmt.Errorf("%w: column %q: %v", ErrMalformedEvent, col.Name, err)
+			return nil, fmt.Errorf("%w: column %q: %w", ErrMalformedEvent, col.Name, err)
 		}
 
 		typedVal, err := validateType(val, col.Type, col.Name)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrMalformedEvent, err)
+			return nil, fmt.Errorf("%w: %w", ErrMalformedEvent, err)
 		}
 
 		rowData[col.Name] = typedVal
@@ -97,7 +98,7 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 	// 4. Extract metadata
 	meta, err := msg.Metadata()
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading metadata: %v", ErrMalformedEvent, err)
+		return nil, fmt.Errorf("%w: reading metadata: %w", ErrMalformedEvent, err)
 	}
 
 	return &RowMutation{

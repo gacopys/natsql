@@ -95,10 +95,10 @@ func TestBuildPlanPKLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan failed: %v", err)
 	}
-	if _, ok := plan.(*PKLookupPlan); !ok {
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
 		t.Fatalf("expected PKLookupPlan, got %T", plan)
 	}
-	pkPlan := plan.(*PKLookupPlan)
 	if pkPlan.ViewName != "test_users" {
 		t.Errorf("ViewName = %q, want %q", pkPlan.ViewName, "test_users")
 	}
@@ -171,10 +171,10 @@ func TestBuildPlan_DuplicatePK_NotContradictory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan failed: %v", err)
 	}
-	if _, ok := plan.(*PKLookupPlan); !ok {
+	pkPlan, ok := plan.(*PKLookupPlan)
+	if !ok {
 		t.Fatalf("expected PKLookupPlan for duplicate same-value PK, got %T", plan)
 	}
-	pkPlan := plan.(*PKLookupPlan)
 	// All conditions should be in Where (including the PK condition)
 	if len(pkPlan.Where) != 2 {
 		t.Errorf("expected 2 Where conditions (all preserved), got %d", len(pkPlan.Where))

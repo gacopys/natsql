@@ -76,7 +76,7 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 	return nil
 }
 
-// Run starts the materializer for a single view. It blocks until the context is cancelled
+// Run starts the materializer for a single view. It blocks until the context is canceled
 // or a drain signal is received via drainCh.
 //
 // The processing loop (D-01, D-02):
@@ -98,7 +98,7 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 // Error handling per ARCHITECTURE.md §2.6 and D-14:
 //   - Malformed events (ErrMalformedEvent): published to DLQ, acked, continue
 //   - KV write failures: original published to DLQ, acked, continue
-//   - Context cancelled: return immediately
+//   - Context canceled: return immediately
 //   - Consumer errors: logged, continue
 func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, logger *slog.Logger, drainCh <-chan struct{}) error {
 	// 1. Create durable consumer
@@ -238,6 +238,7 @@ func classifyWriteError(err error) errorClass {
 		strings.Contains(errStr, "no leader") ||
 		strings.Contains(errStr, "timeout") ||
 		strings.Contains(errStr, "connection closed") {
+
 		return errorClassTransient
 	}
 
@@ -251,7 +252,7 @@ func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, w
 	if mapErr != nil {
 		if errors.Is(mapErr, ErrMalformedEvent) {
 			if ctx.Err() != nil {
-				msg.Nak()
+				_ = msg.Nak()
 				return
 			}
 			if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, mapErr); dlqErr != nil {

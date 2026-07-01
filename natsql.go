@@ -19,6 +19,7 @@ package natsql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -49,7 +50,7 @@ type Engine struct {
 // called automatically.
 func New(js jetstream.JetStream, cfgVal *Config, opts ...Option) (*Engine, error) {
 	if cfgVal == nil {
-		return nil, fmt.Errorf("config is nil")
+		return nil, errors.New("config is nil")
 	}
 	cfgVal.SetDefaults()
 	if err := cfgVal.Validate(); err != nil {
@@ -70,10 +71,10 @@ func New(js jetstream.JetStream, cfgVal *Config, opts ...Option) (*Engine, error
 // called automatically.
 func NewWithNATS(nc *nats.Conn, cfgVal *Config, opts ...Option) (*Engine, error) {
 	if nc == nil {
-		return nil, fmt.Errorf("nats connection is nil")
+		return nil, errors.New("nats connection is nil")
 	}
 	if cfgVal == nil {
-		return nil, fmt.Errorf("config is nil")
+		return nil, errors.New("config is nil")
 	}
 	cfgVal.SetDefaults()
 	if err := cfgVal.Validate(); err != nil {
@@ -99,7 +100,7 @@ func NewWithNATS(nc *nats.Conn, cfgVal *Config, opts ...Option) (*Engine, error)
 // Config.SetDefaults() and Config.Validate() are called automatically.
 func NewEmbedded(cfgVal *Config, opts ...Option) (*Engine, error) {
 	if cfgVal == nil {
-		return nil, fmt.Errorf("config is nil")
+		return nil, errors.New("config is nil")
 	}
 	eng, err := engine.NewEmbedded(cfgVal, convertOpts(opts...)...)
 	if err != nil {

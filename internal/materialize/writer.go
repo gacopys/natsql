@@ -3,7 +3,9 @@ package materialize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -28,7 +30,7 @@ func NewWriter(kv jetstream.KeyValue, viewName string, separator string) *Writer
 // Returns error if mutation is nil.
 func (w *Writer) Apply(ctx context.Context, mut *RowMutation) error {
 	if mut == nil {
-		return fmt.Errorf("mutation is nil")
+		return errors.New("mutation is nil")
 	}
 
 	// Build row with _meta metadata
@@ -38,7 +40,7 @@ func (w *Writer) Apply(ctx context.Context, mut *RowMutation) error {
 	}
 	row["_meta"] = map[string]any{
 		"stream_seq": mut.StreamSeq,
-		"updated_at": mut.Timestamp.Format("2006-01-02T15:04:05.999999999Z07:00"), // RFC3339Nano
+		"updated_at": mut.Timestamp.Format(time.RFC3339Nano), // RFC3339Nano
 	}
 
 	rowJSON, err := json.Marshal(row)

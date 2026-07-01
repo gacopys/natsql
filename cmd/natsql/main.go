@@ -49,7 +49,7 @@ Three deployment modes (D-51):
 
 CLI flags override config file values (D-52).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runServer(cmd)
+		return runServer()
 	},
 }
 
@@ -79,7 +79,7 @@ func main() {
 	}
 }
 
-func runServer(cmd *cobra.Command) error {
+func runServer() error {
 	// 1. Load config file (D-52: config file is primary source)
 	cfg, err := natsql.LoadConfig(cfgPath)
 	if err != nil {

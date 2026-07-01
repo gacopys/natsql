@@ -33,12 +33,12 @@ func RegisterHTTPHandler(router chi.Router, handler QueryHandler) {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
 				w.WriteHeader(http.StatusRequestEntityTooLarge)
-				w.Write([]byte(fmt.Sprintf(`{"results":[],"error":"request body too large (max %d bytes)"}`, maxRequestBodySize)))
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"results":[],"error":"request body too large (max %d bytes)"}`, maxRequestBodySize)))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"results":[],"error":"invalid JSON body"}`))
+			_, _ = w.Write([]byte(`{"results":[],"error":"invalid JSON body"}`))
 			return
 		}
 		// Check for trailing data after JSON body (D-17/D-18)
@@ -48,12 +48,12 @@ func RegisterHTTPHandler(router chi.Router, handler QueryHandler) {
 		if err := decoder.Decode(&trailing); err != io.EOF {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"results":[],"error":"unexpected data after JSON body"}`))
+			_, _ = w.Write([]byte(`{"results":[],"error":"unexpected data after JSON body"}`))
 			return
 		}
 		result := handler.Query(r.Context(), req.SQL)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	})
 }
 

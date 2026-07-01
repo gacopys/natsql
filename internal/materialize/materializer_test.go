@@ -25,8 +25,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	// Create source stream
@@ -77,9 +76,9 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify KV has the row
-	entry, err := kvb.Get(ctx, kv.PkKey("users", "abc123"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("users", []string{"abc123"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.PkKey("users", "abc123"), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("users", []string{"abc123"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("KV entry is nil — event was not materialized")
@@ -118,8 +117,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	// Subscribe to DLQ subject before publishing
@@ -219,8 +217,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	// Subscribe to DLQ to verify malformed event goes there
@@ -282,9 +279,9 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	time.Sleep(2 * time.Second) // allow processing
 
 	// Verify the valid event was materialized
-	entry, err := kvb.Get(ctx, kv.PkKey("continue_test", "valid1"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("continue_test", []string{"valid1"}, ""))
 	if err != nil {
-		t.Fatalf("Get(%q) failed: %v", kv.PkKey("continue_test", "valid1"), err)
+		t.Fatalf("Get(%q) failed: %v", kv.BuildPkKey("continue_test", []string{"valid1"}, ""), err)
 	}
 	if entry == nil {
 		t.Fatal("valid event was not materialized after malformed event")
@@ -311,8 +308,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_MAT_CANCEL"
@@ -364,8 +360,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_MAT_SCHEMA"
@@ -433,8 +428,7 @@ func TestEnsureDLQStream_CreatesCorrectName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	dlqStream, err := EnsureDLQStream(ctx, js)
@@ -458,8 +452,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_MAT_NESTED"
@@ -507,7 +500,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify row
-	entry, err := kvb.Get(ctx, kv.PkKey("nested_test", "u42"))
+	entry, err := kvb.Get(ctx, kv.BuildPkKey("nested_test", []string{"u42"}, ""))
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -546,8 +539,7 @@ func TestMaterializerDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_MAT_DRAIN"
@@ -601,11 +593,13 @@ func TestMaterializerDrain(t *testing.T) {
 }
 
 // goroutineID returns the current goroutine's ID by parsing the stack trace.
-func goroutineID() uint64 {
+func goroutineID(t *testing.T) uint64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
 	var id uint64
-	fmt.Sscanf(string(buf[:n]), "goroutine %d", &id)
+	if _, err := fmt.Sscanf(string(buf[:n]), "goroutine %d", &id); err != nil {
+		t.Fatalf("parsing goroutine id: %v", err)
+	}
 	return id
 }
 
@@ -617,8 +611,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_SEQ_GOROUTINE"
@@ -650,7 +643,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 		goIDsMu sync.Mutex
 	)
 	testHookProcessGoroutine = func() {
-		id := goroutineID()
+		id := goroutineID(t)
 		goIDsMu.Lock()
 		goIDs = append(goIDs, id)
 		goIDsMu.Unlock()
@@ -669,7 +662,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
 
 	// Publish 10 events
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		event := fmt.Sprintf(`{"id": "u%d", "counter": %d}`, i, i)
 		if _, err := js.Publish(ctx, streamName+".events", []byte(event)); err != nil {
 			t.Fatalf("Publish %d failed: %v", i, err)
@@ -714,8 +707,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_SEQ_ORDER"
@@ -753,7 +745,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
 
 	// Publish 10 events to the SAME PK with increasing counter
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		event := fmt.Sprintf(`{"pk": "same_key", "counter": %d}`, i)
 		if _, err := js.Publish(ctx, streamName+".events", []byte(event)); err != nil {
 			t.Fatalf("Publish %d failed: %v", i, err)
@@ -800,8 +792,7 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
 
 	streamName := "TEST_SEQ_HEARTBEAT"
@@ -893,10 +884,10 @@ func TestClassifyWriteError_Transient(t *testing.T) {
 	}{
 		{"deadline exceeded", context.DeadlineExceeded},
 		{"context canceled", context.Canceled},
-		{"connection refused", fmt.Errorf("connection refused")},
-		{"no leader", fmt.Errorf("no leader for topic")},
-		{"timeout", fmt.Errorf("nats: timeout")},
-		{"connection closed", fmt.Errorf("connection closed unexpectedly")},
+		{"connection refused", errors.New("connection refused")},
+		{"no leader", errors.New("no leader for topic")},
+		{"timeout", errors.New("nats: timeout")},
+		{"connection closed", errors.New("connection closed unexpectedly")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -913,11 +904,11 @@ func TestClassifyWriteError_Terminal(t *testing.T) {
 		err  error
 	}{
 		{"nil error", nil},
-		{"key too long", fmt.Errorf("key too long")},
-		{"value too large", fmt.Errorf("value exceeds max size")},
-		{"bad data", fmt.Errorf("invalid message data")},
-		{"generic error", fmt.Errorf("something went wrong")},
-		{"empty string", fmt.Errorf("")},
+		{"key too long", errors.New("key too long")},
+		{"value too large", errors.New("value exceeds max size")},
+		{"bad data", errors.New("invalid message data")},
+		{"generic error", errors.New("something went wrong")},
+		{"empty string", errors.New("")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -944,7 +935,7 @@ func TestProcessEvent_TransientWriteError_NAKs(t *testing.T) {
 	}
 
 	js := &fakeJS{}
-	kvMock := &fakeKV{putErr: fmt.Errorf("connection refused")}
+	kvMock := &fakeKV{putErr: errors.New("connection refused")}
 	writer := NewWriter(kvMock, "test_view", "|")
 	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
 	viewCfg := &natsql.ViewConfig{Name: "test_view"}
@@ -978,7 +969,7 @@ func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
 	}
 
 	js := &fakeJS{}
-	kvMock := &fakeKV{putErr: fmt.Errorf("key too long")}
+	kvMock := &fakeKV{putErr: errors.New("key too long")}
 	writer := NewWriter(kvMock, "test_view", "|")
 	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
 	viewCfg := &natsql.ViewConfig{Name: "test_view"}

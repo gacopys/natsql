@@ -1,4 +1,4 @@
-.PHONY: all build lint test coverage examples
+.PHONY: all build lint lint-fix test coverage examples
 
 all: lint build test coverage examples
 
@@ -6,7 +6,10 @@ build:
 	go build ./...
 
 lint:
-	golangci-lint run ./...
+	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run ./...
+
+lint-fix:
+	@PATH="$(shell go env GOPATH)/bin:$(PATH)" golangci-lint run --fix ./...
 
 test:
 	go test -race -count=1 -coverprofile=coverage.out -v ./...

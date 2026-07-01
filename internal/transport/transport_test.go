@@ -111,7 +111,7 @@ func TestNATSRequestReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterNATSHandler failed: %v", err)
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	// Send request
 	msg, err := nc.Request("natsql.query", []byte("SELECT * FROM test_users WHERE id = 'u1'"), 2*time.Second)
@@ -153,7 +153,7 @@ func TestNATSRequestError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterNATSHandler failed: %v", err)
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	msg, err := nc.Request("natsql.query", []byte("INVALID SQL"), 2*time.Second)
 	if err != nil {
@@ -188,7 +188,12 @@ func TestHTTPQueryEndpoint(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -223,7 +228,12 @@ func TestHTTPInvalidBody(t *testing.T) {
 	defer ts.Close()
 
 	// Send invalid JSON body
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{invalid json`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{invalid json`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -247,7 +257,12 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 
 	// Build a body larger than maxRequestBodySize (1MB)
 	largeSQL := `{"sql":"SELECT * FROM test WHERE x = '` + strings.Repeat("A", 2<<20) + `'"}`
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(largeSQL))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(largeSQL))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -272,8 +287,13 @@ func TestHTTPBodyTrailingData(t *testing.T) {
 	defer ts.Close()
 
 	// Body with trailing non-whitespace data
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query",
 		strings.NewReader(`{"sql":"SELECT 1"}extra`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -298,8 +318,13 @@ func TestHTTPBodyTrailingWhitespaceOK(t *testing.T) {
 	defer ts.Close()
 
 	// Body with trailing whitespace/newline — should be accepted
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query",
 		strings.NewReader("{\"sql\":\"SELECT 1\"}  \n  "))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}
@@ -321,7 +346,12 @@ func TestHTTPContentType(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/v1/query", "application/json", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/v1/query", strings.NewReader(`{"sql":"SELECT * FROM test"}`))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("HTTP request failed: %v", err)
 	}

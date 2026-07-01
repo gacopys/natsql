@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -83,26 +82,6 @@ var allTestRows = []testRow{
 // Helpers
 // ---------------------------------------------------------------------------
 
-// rowMapByPK returns the test rows indexed by user_id for quick lookup.
-func rowMapByPK() map[string]testRow {
-	m := make(map[string]testRow, len(allTestRows))
-	for _, r := range allTestRows {
-		m[r.UserID] = r
-	}
-	return m
-}
-
-// filterRows returns rows matching a predicate.
-func filterRows(rows []testRow, fn func(testRow) bool) []testRow {
-	var out []testRow
-	for _, r := range rows {
-		if fn(r) {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 // requireResultCount asserts the query returns exactly n rows.
 // Returns the results for further assertions.
 func requireResultCount(t *testing.T, res *natsql.QueryResult, label string, want int) []map[string]any {
@@ -150,7 +129,7 @@ func TestBlackBox_Queries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_BLACKBOX"
 	createStream(t, ctx, js, streamName)
@@ -529,7 +508,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "EVENTS_COMPOSITE"
 	createStream(t, ctx, js, streamName)
@@ -635,13 +614,15 @@ func TestFacade_NewWithNATS_NilConn(t *testing.T) {
 }
 
 func TestFacade_NewWithNATS_InvalidConfig(t *testing.T) {
-	_, nc, _ := startEmbeddedNATS(t)
+	nc, _ := startEmbeddedNATS(t)
 
 	// Config with view that has no name — should fail validation
 	_, err := natsql.NewWithNATS(nc, &natsql.Config{
 		Views: []natsql.ViewConfig{
-			{SourceStream: "s", KeyFields: []string{"k"},
-				Columns: []natsql.ColumnConfig{{Name: "k", From: "k", Type: natsql.ColumnTypeString, PrimaryKey: true}}},
+			{
+				SourceStream: "s", KeyFields: []string{"k"},
+				Columns: []natsql.ColumnConfig{{Name: "k", From: "k", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+			},
 		},
 	})
 	if err == nil {
@@ -677,10 +658,9 @@ func TestFacade_WithHTTPServer(t *testing.T) {
 // NATS test helpers
 // ---------------------------------------------------------------------------
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
+func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	nc, js := testutil.StartEmbeddedNATS(t)
-	return nil, nc, js
+	return testutil.StartEmbeddedNATS(t)
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {

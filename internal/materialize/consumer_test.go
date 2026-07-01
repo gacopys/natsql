@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -25,7 +24,7 @@ func TestSetupConsumer_CreatesDurableConsumer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_STREAM"
 	createStream(t, ctx, js, streamName)
@@ -59,7 +58,7 @@ func TestSetupConsumer_ResumesExistingConsumer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_STREAM_RESUME"
 	createStream(t, ctx, js, streamName)
@@ -89,7 +88,7 @@ func TestSetupConsumer_ConfigFieldsApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_CONFIG_STREAM"
 	createStream(t, ctx, js, streamName)
@@ -122,7 +121,7 @@ func TestSetupConsumer_FilterSubjectApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_FILTER_STREAM"
 	createStreamWithSubjects(t, ctx, js, streamName, []string{streamName + ".>"})
@@ -146,7 +145,7 @@ func TestSetupConsumer_DeliverAllPolicy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	streamName := "TEST_DELIVER_ALL"
 	createStream(t, ctx, js, streamName)
@@ -168,7 +167,7 @@ func TestSetupConsumer_StreamNotFound_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, _, js := startEmbeddedNATS(t)
+	_, js := startEmbeddedNATS(t)
 
 	cfg := natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10}
 
@@ -180,10 +179,9 @@ func TestSetupConsumer_StreamNotFound_ReturnsError(t *testing.T) {
 
 // Helpers
 
-func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetStream) {
+func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	nc, js := testutil.StartEmbeddedNATS(t)
-	return nil, nc, js
+	return testutil.StartEmbeddedNATS(t)
 }
 
 func createStream(t *testing.T, ctx context.Context, js jetstream.JetStream, name string) {

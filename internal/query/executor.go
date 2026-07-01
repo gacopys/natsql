@@ -59,7 +59,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("watching keys: %w", err)
 	}
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	var (
 		mu      sync.Mutex

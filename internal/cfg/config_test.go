@@ -241,7 +241,7 @@ views:
     columns:
       - {name: id, from: id, type: string, primary_key: true}
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -257,7 +257,7 @@ func TestLoadConfig_JSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
 	content := `{"views":[{"name":"v","source_stream":"s","key_fields":["k"],"columns":[{"name":"k","from":"k","type":"string","primary_key":true}]}]}`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -272,7 +272,7 @@ func TestLoadConfig_JSON(t *testing.T) {
 func TestLoadConfig_UnsupportedExt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(path, []byte("key=val"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("key=val"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)
@@ -284,7 +284,7 @@ func TestLoadConfig_UnsupportedExt(t *testing.T) {
 func TestLoadConfig_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	if err := os.WriteFile(path, []byte(":::invalid"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(":::invalid"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)
@@ -296,7 +296,7 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 func TestLoadConfig_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(path, []byte("{bad json}"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("{bad json}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig(path)

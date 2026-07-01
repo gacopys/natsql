@@ -223,7 +223,10 @@ func TestExtractConditions_AND_TwoConditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	conds, err := extractConditions(sel.Where.Expr)
 	if err != nil {
 		t.Fatalf("extractConditions: %v", err)
@@ -239,7 +242,10 @@ func TestExtractConditions_OR_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for OR, got nil")
@@ -252,7 +258,10 @@ func TestExtractConditions_UnsupportedExpr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for unsupported expression, got nil")
@@ -270,7 +279,10 @@ func TestComparisonToCondition_InvalidLeftOperand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for invalid left operand, got nil")
@@ -283,7 +295,10 @@ func TestComparisonToCondition_UnsupportedOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	sel := stmt.(*sqlparser.Select)
+	sel, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		t.Fatalf("expected *sqlparser.Select, got %T", stmt)
+	}
 	_, err = extractConditions(sel.Where.Expr)
 	if err == nil {
 		t.Fatal("expected error for unsupported operator, got nil")

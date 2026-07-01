@@ -167,8 +167,12 @@ func TestWriter_Apply_IdempotentOverwrite(t *testing.T) {
 	if !ok {
 		t.Fatal("_meta missing after overwrite")
 	}
-	if meta["stream_seq"] != float64(43) {
-		t.Errorf("_meta.stream_seq = %d, want 43", int(meta["stream_seq"].(float64)))
+	seq, ok := meta["stream_seq"].(float64)
+	if !ok {
+		t.Fatalf("expected float64, got %T", meta["stream_seq"])
+	}
+	if seq != float64(43) {
+		t.Errorf("_meta.stream_seq = %d, want 43", int(seq))
 	}
 }
 
@@ -187,7 +191,7 @@ func TestWriter_Apply_ContextCancellation(t *testing.T) {
 
 	w := NewWriter(kvb, "users", "|")
 
-	// Create a cancelled context
+	// Create a canceled context
 	cancelledCtx, cancelFn := context.WithCancel(context.Background())
 	cancelFn() // Cancel immediately
 
@@ -202,7 +206,7 @@ func TestWriter_Apply_ContextCancellation(t *testing.T) {
 
 	err = w.Apply(cancelledCtx, mut)
 	if err == nil {
-		t.Fatal("expected error for cancelled context, got nil")
+		t.Fatal("expected error for canceled context, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
