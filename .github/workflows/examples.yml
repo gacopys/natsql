@@ -18,7 +18,6 @@ jobs:
           - 03-malformed-events
           - 04-multiple-views
           - 05-library-embed
-          - 07-perf-benchmark
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -27,3 +26,15 @@ jobs:
       - name: Run
         run: go run .
         working-directory: examples/${{ matrix.example }}
+
+  perf-benchmark:
+    name: 07-perf-benchmark (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/07-perf-benchmark/go.mod
+      - name: Build
+        run: go build .
+        working-directory: examples/07-perf-benchmark
