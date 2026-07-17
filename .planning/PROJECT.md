@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A NATS-native materialized view engine — **shipped v1.2 with 100% code review remediation**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS. Now hardened with sequential processing, error classification, synchronous startup, large-integer precision, and golangci-lint/govulncheck CI enforcement.
+A NATS-native materialized view engine — **shipped v2.0 with full code review remediation and stabilization**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS. Hardened with sequential processing, error classification, synchronous startup, large-integer precision, golangci-lint/govulncheck CI enforcement, and all lifecycle/resilience bugs fixed.
 
 For NATS developers building event-driven systems who need simple queryable state without running Postgres, Redis, or Kafka alongside their NATS cluster.
 
@@ -10,9 +10,23 @@ For NATS developers building event-driven systems who need simple queryable stat
 
 A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
-## Current State (v1.2 — Shipped 2026-07-01)
+## Current Milestone: v2.1 Code Stabilization
 
-Shipped **v1.2** on 2026-07-01 after remediating all 25 code review findings. Codebase clean, CI hardened, all vulnerabilities fixed (Go 1.26.4).
+**Goal:** Fix all bugs and code quality issues verified in the cr3.md code review — the entire P0-P3 finding set. No new features. A pure hardening release.
+
+**Target features:**
+- **Lifecycle & resilience fixes:** Start failure cleanup, Query-after-Close guard, panic safety, CLI cleanup
+- **Read/write consistency:** Canonical PK value formatter, safe key_separator validation
+- **SQL dialect hardening:** Reject aliases, mixed *, NULL literals; full-column contradiction detection
+- **Config validation fix:** Reject duplicate key_fields
+- **Contract/doc alignment:** WithHTTPServer host semantics, deduplicate schema storage, CAS->LWW doc fix
+- **Transport hardening:** Typed error sentinels, errorEnvelope helper, DLQ stream caps, consumer bounds
+- **API gaps:** HTTP disable option, non-owning NATS conn option, HTTPAddr accessor
+- **Cleanup & smells:** Dead code removal, default centralization, logger wiring, style fixes
+
+## Current State (v2.0 — Shipped)
+
+Shipped **v2.0** — all v1.x milestones (v1.0 functional prototype → v1.1 tech debt → v1.2 code review remediation) plus the cr3.md code review verification. Codebase clean, CI hardened, all vulnerabilities fixed (Go 1.26.4).
 
 **Architecture:** 3-component model — Materializer (stream→KV, sequential ordered processing with error classification), Query Engine (SQL→KV reads with full predicate support and large-integer precision), Transport (NATS request-reply, HTTP/JSON, embedded Go API).
 
@@ -29,6 +43,7 @@ Shipped **v1.2** on 2026-07-01 after remediating all 25 code review findings. Co
 - HTTP trailing data rejection, NATS Flush/Respond error surfacing (TRN-02/03)
 - golangci-lint (40 linters), govulncheck, all vulnerabilities fixed
 - Go 1.26.4 with all dependencies upgraded
+- cr3.md verification — 14 real bugs, 38 smells, all confirmed against source
 
 ## Requirements
 
@@ -83,15 +98,47 @@ Shipped **v1.2** on 2026-07-01 after remediating all 25 code review findings. Co
 - ✓ **CLN-07**: Test helpers deduplicated into internal/testutil — v1.2
 - ✓ **CLN-08**: SQL_DIALECT.md created, README updated — v1.2
 
-### Active (Next Milestone)
+### Active (v2.1 — Code Stabilization)
 
-- [ ] **QUERY-02**: Range scans (`WHERE <col> > <val>` / `< <val>`)
-- [ ] **INDEX-01**: Secondary indexes on materialized views
-- [ ] **DELETE-01**: Delete/tombstone semantics for materialized rows
-- [ ] **BUCKET-01**: Per-view KV buckets for full isolation
+- [ ] **LIFE-01**: `Engine.Start` cleans up all partially-started resources on error (goroutines, drain channels, NATS sub, HTTP server)
+- [ ] **LIFE-02**: `Engine.Query` rejects queries after `Close()` with explicit error
+- [ ] **LIFE-03**: Materializer does not die silently on panic — error is surfaced, in-flight message is NAK'd
+- [ ] **LIFE-04**: CLI calls `eng.Close()` on all failure paths
+- [ ] **LIFE-05**: `Engine.Query` lazy-init does not hold the mutex across a KV RPC
+- [ ] **PK-01**: A single canonical `FormatPKPart` is used by both writer and planner; number-typed PKs with non-canonical JSON forms (100.0, 1e10) are reachable via PK lookup
+- [ ] **PK-02**: `key_separator` is restricted to `/` and `_` (chars escaped by `SanitizePK`) to prevent composite-key collisions
+- [ ] **SQL-01**: Column aliases (`SELECT id AS x`) are rejected at parse time with an explicit error
+- [ ] **SQL-02**: Mixed `*` with explicit columns (`SELECT *, id`) is rejected at parse time
+- [ ] **SQL-03**: `NULL` literals in WHERE are rejected at parse time
+- [ ] **SQL-04**: Contradictory WHERE predicates on any column (not just PK) produce `EmptyPlan`
+- [ ] **CFG-01**: Duplicate `key_fields` entries are rejected by config validation
+- [ ] **DOC-01**: `WithHTTPServer` honours the host component (0.0.0.0 override works as documented)
+- [ ] **DOC-02**: Duplicate `StoreSchema` call removed from `materialize.Run` (engine is the single owner)
+- [ ] **DOC-03**: Consistency constraint in docs corrected from "CAS-based" to "idempotent upsert within sequential consumer"
+- [ ] **TSP-01**: NATS and HTTP error envelopes use `json.Marshal` of a real struct (no hand-rolled JSON strings)
+- [ ] **TSP-02**: Write error classification uses typed NATS/jetstream sentinels where available; substring fallback logs a warning
+- [ ] **TSP-03**: All mapper errors (not just `ErrMalformedEvent`) route to DLQ + Ack
+- [ ] **ROB-01**: DLQ stream config includes `MaxMsgs`/`MaxBytes` caps
+- [ ] **ROB-02**: Consumer config bounds (AckWaitSeconds, MaxAckPending, MaxDeliver) validated against negative values
+- [ ] **ROB-03**: DLQ envelope timestamp uses `RFC3339Nano` for sub-second precision
+- [ ] **ROB-04**: `FullScanPlan` pre-normalises condition values once per query (not per-row)
+- [ ] **APIGAP-01**: User can disable HTTP transport via `WithHTTPDisabled()` / config
+- [ ] **APIGAP-02**: Library users can add a NATS query subscription without transferring connection ownership (`WithNATSQueryConn`)
+- [ ] **APIGAP-03**: Bound HTTP port is discoverable via `HTTPAddr()` / `Stats`
+- [ ] **CLN-01**: Dead code removed (deprecated `PKKey`, dead `float64` branches in `validateType`, redundant port defaults)
+- [ ] **CLN-02**: Default PK separator logic centralised in `BuildSchema` (removed from materializer and planner)
+- [ ] **CLN-03**: CLI passes logger to engine construction; query log level is `Debug` not `Info`
+- [ ] **CLN-04**: Redundant `SetDefaults` call removed from CLI; redundant `Content-Type` sets hoisted; `oapi.QueryResult` vs `query.QueryResult` rationalised
+- [ ] **CLN-05**: `PKLookupPlan` has explicit `Limit` awareness (documented behaviour)
+- [ ] **CLN-06**: `EmptyPlan.Columns` dead field removed; detached doc comment fixed
+- [ ] **CLN-07**: `embed.StartNode` and `testutil.StartEmbeddedNATS` share a base helper
 
 ### Out of Scope
 
+- Range scans (`>`, `<`, `>=`, `<=`) — deferred; cr3 code stabilization took priority
+- Secondary indexes — deferred; cr3 code stabilization took priority
+- Delete/tombstone semantics — deferred; cr3 code stabilization took priority
+- Per-view KV buckets — deferred; cr3 code stabilization took priority
 - DML (INSERT/UPDATE/DELETE via SQL) — writes only happen through stream messages
 - Multi-table JOINs — deferred
 - Complex transactions / serializable isolation
@@ -147,4 +194,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-07-01 — after v1.2 milestone completed*
+*Last updated: 2026-07-17 — after v2.1 milestone started*
