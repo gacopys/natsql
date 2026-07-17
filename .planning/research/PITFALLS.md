@@ -1,4 +1,4 @@
-# Pitfalls: Code Review Findings and Prevention for natsql v1.2
+# Pitfalls: Code Review Findings and Prevention for natsql v2.0.0
 
 **Project:** natsql — NATS-native materialized view engine
 **Researched:** 2026-05-31
@@ -243,5 +243,5 @@ Items that appear complete but have hidden issues:
 
 ---
 
-*Pitfalls research for: natsql v1.2 Code Review Remediation*
+*Pitfalls research for: natsql v2.0.0 Code Review Remediation*
 *Researched: 2026-05-31*

@@ -1,4 +1,4 @@
-# Stack Research: natsql v1.2 Code Review Remediation
+# Stack Research: natsql v2.0.0 Code Review Remediation
 
 **Project:** natsql — NATS-native materialized view engine
 **Researched:** 2026-05-31
@@ -45,5 +45,5 @@ The zero-external-dependency constraint is maintained. No changes to `go.mod` ar
 
 ---
 
-*Stack research for: natsql v1.2 Code Review Remediation*
+*Stack research for: natsql v2.0.0 Code Review Remediation*
 *Researched: 2026-05-31*

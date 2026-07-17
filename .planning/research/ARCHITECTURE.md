@@ -1,13 +1,13 @@
-# Architecture Remediation: Code Review Fixes for natsql v1.2
+# Architecture Remediation: Code Review Fixes for natsql v2.0.0
 
 **Project:** natsql — NATS-native materialized view engine
 **Researched:** 2026-05-31
-**Mode:** Architecture remediation for 25 code review findings (v1.2 milestone)
+**Mode:** Architecture remediation for 25 code review findings (v2.0.0 milestone)
 **Confidence:** HIGH (all findings verified against source code, fixes designed with zero new dependencies)
 
 ## Executive Summary
 
-This document describes the architectural changes required to fix 25 code review findings (CR-01 through CR-25) in natsql v1.2. The fixes cluster into five architectural domains: **(1) Materializer ordering and error handling**, **(2) Canonical PK encoding pipeline**, **(3) Query planner predicate correctness**, **(4) Engine lifecycle synchronization**, and **(5) Config validation and transport hardening**. No new components are introduced — the 3-component model (Materializer, Query Engine, Transport) is preserved. All fixes are targeted modifications to existing components with well-defined integration boundaries.
+This document describes the architectural changes required to fix 25 code review findings (CR-01 through CR-25) in natsql v2.0.0. The fixes cluster into five architectural domains: **(1) Materializer ordering and error handling**, **(2) Canonical PK encoding pipeline**, **(3) Query planner predicate correctness**, **(4) Engine lifecycle synchronization**, and **(5) Config validation and transport hardening**. No new components are introduced — the 3-component model (Materializer, Query Engine, Transport) is preserved. All fixes are targeted modifications to existing components with well-defined integration boundaries.
 
 The most architecturally significant change is removing the 16-goroutine worker pool from the materializer (CR-01), restoring the per-view ordered processing guarantee that NATS JetStream's single-consumer model provides. The second most significant is unifying the PK encoding pipeline (CR-02), eliminating a correctness bug where writes and reads produce different keys for the same data.
 
@@ -239,7 +239,7 @@ consumerCfg := jetstream.ConsumerConfig{
 
 **Current state:** `ConsumerConfig.BatchSize` influences `MaxAckPending = batchSize * 2` but does NOT control fetch batch size (the consumer uses `Messages()` → repeated `Next()`). The name implies batch fetching behavior that doesn't exist.
 
-**Fix:** Rename the config field to `MaxAckPending` to reflect its actual behavior, or add a `FetchBatchSize` if batch fetching is implemented. For v1.2 scope: rename the field.
+**Fix:** Rename the config field to `MaxAckPending` to reflect its actual behavior, or add a `FetchBatchSize` if batch fetching is implemented. For v2.0.0 scope: rename the field.
 
 ```go
 type ConsumerConfig struct {
@@ -630,7 +630,7 @@ func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]m
 }
 ```
 
-**Medium-term fix (not in v1.2 scope):** Per-view KV buckets. Each view gets its own bucket `natsql-views-{name}`, so `WatchAll` on one bucket only scans that view's data. This is a breaking change requiring config migration.
+**Medium-term fix (not in v2.0.0 scope):** Per-view KV buckets. Each view gets its own bucket `natsql-views-{name}`, so `WatchAll` on one bucket only scans that view's data. This is a breaking change requiring config migration.
 
 ---
 
@@ -700,7 +700,7 @@ for i := range e.cfg.Views {
 }
 ```
 
-Note: The materializer's `Run` function already returns consumer setup errors synchronously before entering the message loop. The goroutine wrapper captures these. For v1.2, we add an initial health check — wait briefly for all materializers to confirm they're alive (consumer setup succeeded), then proceed. This is a **best-effort** check because the materializer runs forever if setup succeeds.
+Note: The materializer's `Run` function already returns consumer setup errors synchronously before entering the message loop. The goroutine wrapper captures these. For v2.0.0, we add an initial health check — wait briefly for all materializers to confirm they're alive (consumer setup succeeded), then proceed. This is a **best-effort** check because the materializer runs forever if setup succeeds.
 
 **c) NATS handler failure should be fatal (or at least logged at ERROR level with clear message):**
 ```go
@@ -1118,11 +1118,11 @@ Update README and feature docs to reflect implemented LIMIT semantics.
 | ALL predicates as post-filters | Correctness; handles contradictory and duplicate equalities | Short-circuit detection only — misses post-filter cases |
 | `net.Listen` before `Serve` for HTTP | Synchronous error propagation; prevents "started but not serving" state | Startup timeout — racy, less predictable |
 | Error classification at caller level | Writer stays simple; classification logic is caller policy | Add error types to Writer — would work but adds coupling |
-| No per-view KV buckets for v1.2 | Minimal change; cross-view scan cost is documented | Per-view buckets — breaking change, scope for v2 |
+| No per-view KV buckets for v2.0.0 | Minimal change; cross-view scan cost is documented | Per-view buckets — breaking change, scope for v2 |
 | Rename BatchSize to MaxAckPending | Reflects actual behavior; no implementation change needed | Implement Fetch() batching — scope increase |
 
 ---
 
-*Architecture remediation research for: natsql v1.2 Code Review Fixes*
+*Architecture remediation research for: natsql v2.0.0 Code Review Fixes*
 *Researched: 2026-05-31*
 *Based on: cr.md findings, source code audit, v1.1 architecture patterns*

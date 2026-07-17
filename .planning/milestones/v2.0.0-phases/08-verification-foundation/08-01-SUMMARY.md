@@ -43,7 +43,7 @@ completed: 2026-06-01
 - Each finding has explicit status (CONFIRMED/DISMISSED) with line-level source code evidence and 3-5 sentence reasoning
 - Summary table documents: 3 Critical, 11 High, 7 Medium, 4 Low — all confirmed present in current code
 - Phase mapping assigns each confirmed finding to its fix phase (8, 9, 10, 11, or deferred v2)
-- No code changes were made — this is a pure read-only verification establishing the v1.2 baseline
+- No code changes were made — this is a pure read-only verification establishing the v2.0.0 baseline
 
 ## Task Commits
 

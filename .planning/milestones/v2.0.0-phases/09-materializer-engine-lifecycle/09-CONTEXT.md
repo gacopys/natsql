@@ -60,7 +60,7 @@ Fix materializer correctness (ordered processing, error classification, consumer
 - `.planning/VERIFICATION_FINDINGS.md` — Current verification status of all findings (all confirmed)
 
 ### Requirements
-- `.planning/REQUIREMENTS.md` §v1.2 — MAT-01 through MAT-04, LIFE-01, LIFE-02
+- `.planning/REQUIREMENTS.md` §v2.0.0 — MAT-01 through MAT-04, LIFE-01, LIFE-02
 - `.planning/ROADMAP.md` §Phase 9 — Success criteria and dependency information
 
 ### Phase 8 Prior Art

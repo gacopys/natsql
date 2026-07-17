@@ -62,7 +62,7 @@ Fix query engine correctness (PK predicate handling, meta field filtering, numer
 - `.planning/research/PITFALLS.md` (CR-03, CR-14) — Detailed pitfall analysis
 
 ### Requirements
-- `.planning/REQUIREMENTS.md` §v1.2 — QENG-01 through QENG-04, TRN-01 through TRN-04
+- `.planning/REQUIREMENTS.md` §v2.0.0 — QENG-01 through QENG-04, TRN-01 through TRN-04
 - `.planning/ROADMAP.md` §Phase 10 — Success criteria
 
 ### Prior Phase Context
