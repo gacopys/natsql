@@ -2,8 +2,6 @@ module github.com/gacopys/natsql
 
 go 1.26.5
 
-toolchain go1.26.5
-
 require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/nats-io/nats-server/v2 v2.14.3

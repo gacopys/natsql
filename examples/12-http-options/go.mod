@@ -2,8 +2,6 @@ module example-http-options
 
 go 1.26.5
 
-toolchain go1.26.5
-
 require (
 	github.com/gacopys/natsql v1.0.0
 	github.com/nats-io/nats.go v1.52.0
