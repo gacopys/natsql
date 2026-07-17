@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A NATS-native materialized view engine — **shipped v1.2 with 100% code review remediation**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS. Now hardened with sequential processing, error classification, synchronous startup, large-integer precision, and golangci-lint/govulncheck CI enforcement.
+A NATS-native materialized view engine — **shipped v2.0.0 with 100% code review remediation**. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply, HTTP, or in-process Go calls. Write events to JetStreams, get queryable state — no database other than NATS. Now hardened with sequential processing, error classification, synchronous startup, large-integer precision, and golangci-lint/govulncheck CI enforcement.
 
 For NATS developers building event-driven systems who need simple queryable state without running Postgres, Redis, or Kafka alongside their NATS cluster.
 
@@ -10,9 +10,9 @@ For NATS developers building event-driven systems who need simple queryable stat
 
 A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
-## Current State (v1.2 — Shipped 2026-07-01)
+## Current State (v2.0.0 — Shipped 2026-07-01)
 
-Shipped **v1.2** on 2026-07-01 after remediating all 25 code review findings. Codebase clean, CI hardened, all vulnerabilities fixed (Go 1.26.4).
+Shipped **v2.0.0** on 2026-07-01 after remediating all 25 code review findings. Codebase clean, CI hardened, all vulnerabilities fixed (Go 1.26.4).
 
 **Architecture:** 3-component model — Materializer (stream→KV, sequential ordered processing with error classification), Query Engine (SQL→KV reads with full predicate support and large-integer precision), Transport (NATS request-reply, HTTP/JSON, embedded Go API).
 
@@ -56,34 +56,34 @@ Shipped **v1.2** on 2026-07-01 after remediating all 25 code review findings. Co
 - ✓ **FIX-TRN-02**: HTTP query endpoint enforces request body size limit — v1.1
 - ✓ **FIX-TRN-03**: NATS query handler uses bounded context with timeout — v1.1
 - ✓ **FIX-TRN-04**: Dead code, unused parameters, and test flakiness cleaned up — v1.1
-- ✓ **VER-01**: Each finding in cr.md examined against source and confirmed/dismissed — v1.2
-- ✓ **FND-01**: Canonical PK encoder (BuildPkKey) used by write and read paths — v1.2
-- ✓ **FND-02**: Unsupported SQL constructs rejected at parse time — v1.2
-- ✓ **FND-03**: Config cross-validation (key_fields vs primary_key) — v1.2
-- ✓ **MAT-01**: Sequential ordered processing, worker pool removed — v1.2
-- ✓ **MAT-02**: Error classification (transient→NAK, terminal→DLQ) — v1.2
-- ✓ **MAT-03**: InactiveThreshold removed, durable consumers persist — v1.2
-- ✓ **MAT-04**: BatchSize renamed to MaxAckPending — v1.2
-- ✓ **QENG-01**: All WHERE conditions retained as post-filters — v1.2
-- ✓ **QENG-02**: SELECT * excludes internal _meta fields — v1.2
-- ✓ **QENG-03**: UseNumber for large integer precision — v1.2
-- ✓ **QENG-04**: WatchAll + HasPrefix prefix filter for single-view scans — v1.2
-- ✓ **LIFE-01**: HTTP port from cfg.HTTP.Port — v1.2
-- ✓ **LIFE-02**: Synchronous startup error propagation — v1.2
-- ✓ **TRN-01**: CLI --create-streams flag with source_subject — v1.2
-- ✓ **TRN-02**: errors.As for MaxBytesError, trailing data rejection — v1.2
-- ✓ **TRN-03**: NATS Flush/Respond error surfacing — v1.2
-- ✓ **TRN-04**: "marshaling row" → "unmarshaling row" — v1.2
-- ✓ **CLN-01**: $. prefix support in extractNestedField — v1.2
-- ✓ **CLN-02**: Index config validation error — v1.2
-- ✓ **CLN-03**: Delete/tombstone semantics documented — v1.2
-- ✓ **CLN-04**: Example error handling fixed, lifecycle hazards resolved — v1.2
-- ✓ **CLN-05**: Dead code removed (Stats.LastError, dlqStream, etc.) — v1.2
-- ✓ **CLN-06**: gofmt enforced in CI — v1.2
-- ✓ **CLN-07**: Test helpers deduplicated into internal/testutil — v1.2
-- ✓ **CLN-08**: SQL_DIALECT.md created, README updated — v1.2
+- ✓ **VER-01**: Each finding in cr.md examined against source and confirmed/dismissed — v2.0.0
+- ✓ **FND-01**: Canonical PK encoder (BuildPkKey) used by write and read paths — v2.0.0
+- ✓ **FND-02**: Unsupported SQL constructs rejected at parse time — v2.0.0
+- ✓ **FND-03**: Config cross-validation (key_fields vs primary_key) — v2.0.0
+- ✓ **MAT-01**: Sequential ordered processing, worker pool removed — v2.0.0
+- ✓ **MAT-02**: Error classification (transient→NAK, terminal→DLQ) — v2.0.0
+- ✓ **MAT-03**: InactiveThreshold removed, durable consumers persist — v2.0.0
+- ✓ **MAT-04**: BatchSize renamed to MaxAckPending — v2.0.0
+- ✓ **QENG-01**: All WHERE conditions retained as post-filters — v2.0.0
+- ✓ **QENG-02**: SELECT * excludes internal _meta fields — v2.0.0
+- ✓ **QENG-03**: UseNumber for large integer precision — v2.0.0
+- ✓ **QENG-04**: WatchAll + HasPrefix prefix filter for single-view scans — v2.0.0
+- ✓ **LIFE-01**: HTTP port from cfg.HTTP.Port — v2.0.0
+- ✓ **LIFE-02**: Synchronous startup error propagation — v2.0.0
+- ✓ **TRN-01**: CLI --create-streams flag with source_subject — v2.0.0
+- ✓ **TRN-02**: errors.As for MaxBytesError, trailing data rejection — v2.0.0
+- ✓ **TRN-03**: NATS Flush/Respond error surfacing — v2.0.0
+- ✓ **TRN-04**: "marshaling row" → "unmarshaling row" — v2.0.0
+- ✓ **CLN-01**: $. prefix support in extractNestedField — v2.0.0
+- ✓ **CLN-02**: Index config validation error — v2.0.0
+- ✓ **CLN-03**: Delete/tombstone semantics documented — v2.0.0
+- ✓ **CLN-04**: Example error handling fixed, lifecycle hazards resolved — v2.0.0
+- ✓ **CLN-05**: Dead code removed (Stats.LastError, dlqStream, etc.) — v2.0.0
+- ✓ **CLN-06**: gofmt enforced in CI — v2.0.0
+- ✓ **CLN-07**: Test helpers deduplicated into internal/testutil — v2.0.0
+- ✓ **CLN-08**: SQL_DIALECT.md created, README updated — v2.0.0
 
-### Active (Next Milestone)
+### Active (v2.1.0)
 
 - [ ] **QUERY-02**: Range scans (`WHERE <col> > <val>` / `< <val>`)
 - [ ] **INDEX-01**: Secondary indexes on materialized views
@@ -147,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-07-01 — after v1.2 milestone completed*
+*Last updated: 2026-07-01 — after v2.0.0 milestone completed*

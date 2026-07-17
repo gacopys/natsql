@@ -1,4 +1,4 @@
-# Feature Landscape: Code Review Corrections for natsql v1.2
+# Feature Landscape: Code Review Corrections for natsql v2.0.0
 
 **Project:** natsql — NATS-native materialized view engine
 **Researched:** 2026-05-31
@@ -197,7 +197,7 @@ CR-07 (Startup errors) ──uses──> CR-06 (HTTP port plumbing)
 
 ---
 
-## MVP Definition for v1.2
+## MVP Definition for v2.0.0
 
 ### Must Fix (Critical — Data Correctness)
 
@@ -241,5 +241,5 @@ CR-07 (Startup errors) ──uses──> CR-06 (HTTP port plumbing)
 
 ---
 
-*Feature research for: natsql v1.2 Code Review Corrections*
+*Feature research for: natsql v2.0.0 Code Review Corrections*
 *Researched: 2026-05-31*

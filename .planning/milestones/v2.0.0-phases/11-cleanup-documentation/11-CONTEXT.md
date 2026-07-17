@@ -70,7 +70,7 @@ Clean up the codebase after all behavioral fixes (Phases 8-10) are verified and 
 - `.planning/research/ARCHITECTURE.md` §6 — Cleanup recommendations and architecture impact
 
 ### Requirements
-- `.planning/REQUIREMENTS.md` §v1.2 — CLN-01 through CLN-08 requirement definitions
+- `.planning/REQUIREMENTS.md` §v2.0.0 — CLN-01 through CLN-08 requirement definitions
 - `.planning/ROADMAP.md` §Phase 11 — Success criteria and dependency information
 
 ### Prior Phase Context

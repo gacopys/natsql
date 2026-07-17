@@ -1,4 +1,4 @@
-# Research Summary: natsql v1.2 Code Review Remediation
+# Research Summary: natsql v2.0.0 Code Review Remediation
 
 **Project:** natsql — NATS-native materialized view engine
 **Domain:** Stream-to-KV materialized view engine with read-only SQL query layer
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The v1.2 code review identified 25 findings (3 Critical, 11 High, 7 Medium, 4 Low) across the natsql codebase. The fixes cluster into six architectural waves: **(1) Foundation refactoring** — canonical PK encoder, config validation, parser hardening; **(2) Materializer correctness** — ordered processing, error classification, consumer durability; **(3) Query engine correctness** — predicate handling, metadata filtering, number precision; **(4) Engine lifecycle** — synchronous startup errors, config plumbing; **(5) Transport/CLI** — stream creation, HTTP handling, NATS errors; **(6) Cleanup** — dead code, formatting, docs.
+The v2.0.0 code review identified 25 findings (3 Critical, 11 High, 7 Medium, 4 Low) across the natsql codebase. The fixes cluster into six architectural waves: **(1) Foundation refactoring** — canonical PK encoder, config validation, parser hardening; **(2) Materializer correctness** — ordered processing, error classification, consumer durability; **(3) Query engine correctness** — predicate handling, metadata filtering, number precision; **(4) Engine lifecycle** — synchronous startup errors, config plumbing; **(5) Transport/CLI** — stream creation, HTTP handling, NATS errors; **(6) Cleanup** — dead code, formatting, docs.
 
 The most architecturally significant changes are: **(A)** Removing the 16-goroutine worker pool from the materializer to restore per-view stream ordering (CR-01). **(B)** Unifying PK encoding into a single `BuildPkKey` function used by both write and read paths (CR-02). **(C)** Keeping ALL WHERE predicates as post-filters to prevent contradictory predicates from producing wrong results (CR-03). No new components are needed — all fixes are targeted modifications to existing components with the 3-component model preserved.
 
@@ -124,7 +124,7 @@ Six implementation waves with the following ordering rationale:
 
 | Gap | Impact | Resolution |
 |-----|--------|------------|
-| **Per-view KV buckets** (deferred) | CR-13's real fix would be per-view buckets, which is a breaking change | Defer to v2; document cross-view scan cost for v1.2 |
+| **Per-view KV buckets** (deferred) | CR-13's real fix would be per-view buckets, which is a breaking change | Defer to v2; document cross-view scan cost for v2.0.0 |
 | **Performance impact of sequential processing** (CR-01) | Throughput may decrease without worker pool | Benchmark after implementation; add -race testing to verify |
 | **Delete semantics** (CR-17) | No tombstone/delete model for materialized rows | Defer to v2; keep as open gap |
 | **Index config acceptance** (CR-16) | Users can configure indexes but they're ignored | Reject at validation time with clear error message |
@@ -155,4 +155,4 @@ Six implementation waves with the following ordering rationale:
 ---
 
 *Research completed: 2026-05-31*
-*Ready for v1.2 milestone planning: yes*
+*Ready for v2.0.0 milestone planning: yes*

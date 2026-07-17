@@ -59,7 +59,7 @@ Verify all 25 code review findings against source code and fix foundational corr
 - `.planning/research/SUMMARY.md` — Research synthesis, fix waves, dependency graph, and phase mapping
 
 ### Requirements
-- `.planning/REQUIREMENTS.md` §v1.2 — VER-01, FND-01, FND-02, FND-03 requirement definitions
+- `.planning/REQUIREMENTS.md` §v2.0.0 — VER-01, FND-01, FND-02, FND-03 requirement definitions
 - `.planning/ROADMAP.md` §Phase 8 — Phase success criteria and dependency information
 
 ### Project Constants

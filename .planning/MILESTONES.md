@@ -1,6 +1,6 @@
 # Milestones
 
-## v1.2 Code Review Remediation (Shipped: 2026-07-01)
+## v2.0.0 Code Review Remediation (Shipped: 2026-07-01)
 
 **Phases completed:** 4 phases, 12 plans, 66 commits
 

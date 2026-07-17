@@ -4,13 +4,13 @@
 
 natsql is a NATS-native materialized view engine. Define stream-to-KV materializations declaratively (YAML/JSON), and query the resulting state with read-only SQL via NATS request-reply or HTTP.
 
-All three milestones shipped — v1.0 MVP, v1.1 Tech Debt Cleanup, v1.2 Code Review Remediation. Next milestone defines v2.0 scope.
+All three milestones shipped — v1.0 MVP, v1.1 Tech Debt Cleanup, v2.0.0 Code Review Remediation. Next milestone defines v2.1.0 scope.
 
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-3 (shipped 2026-05-28)
 - ✅ **v1.1 Tech Debt Cleanup** — Phases 4-7 (shipped 2026-05-29)
-- ✅ **v1.2 Code Review Remediation** — Phases 8-11 (shipped 2026-07-01)
+- ✅ **v2.0.0 Code Review Remediation** — Phases 8-11 (shipped 2026-07-01)
 
 ## Phases
 
@@ -40,14 +40,14 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 <br/>
 
 <details>
-<summary>✅ v1.2 Code Review Remediation (Phases 8-11) — SHIPPED 2026-07-01</summary>
+<summary>✅ v2.0.0 Code Review Remediation (Phases 8-11) — SHIPPED 2026-07-01</summary>
 
 - [x] **Phase 8: Verification & Foundation** — CR baseline, canonical PK encoder, SQL rejection, config validation
 - [x] **Phase 9: Materializer & Engine Lifecycle** — Sequential processing, error classification, consumer durability, startup reliability
 - [x] **Phase 10: Query Engine & Transport** — Predicate handling, meta filtering, number precision, transport robustness
 - [x] **Phase 11: Cleanup & Documentation** — Dead code removal, gofmt, testutil, docs sync, examples hygiene
 
-See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
+See `.planning/milestones/v2.0.0-ROADMAP.md` for full phase details.
 </details>
 
 ## Progress
@@ -61,7 +61,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 | 5. Materializer Hardening | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 6. Transport & Code Health | v1.1 | 1/1 | Complete | 2026-05-29 |
 | 7. Integration Verification | v1.1 | 1/1 | Complete | 2026-05-29 |
-| 8. Verification & Foundation | v1.2 | 4/4 | Complete | 2026-06-01 |
-| 9. Materializer & Engine Lifecycle | v1.2 | 3/3 | Complete | 2026-06-01 |
-| 10. Query Engine & Transport | v1.2 | 2/2 | Complete | 2026-06-02 |
-| 11. Cleanup & Documentation | v1.2 | 3/3 | Complete | 2026-07-01 |
+| 8. Verification & Foundation | v2.0.0 | 4/4 | Complete | 2026-06-01 |
+| 9. Materializer & Engine Lifecycle | v2.0.0 | 3/3 | Complete | 2026-06-01 |
+| 10. Query Engine & Transport | v2.0.0 | 2/2 | Complete | 2026-06-02 |
+| 11. Cleanup & Documentation | v2.0.0 | 3/3 | Complete | 2026-07-01 |

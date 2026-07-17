@@ -1,6 +1,6 @@
 module example-yaml-vs-json
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/gacopys/natsql v1.0.0
