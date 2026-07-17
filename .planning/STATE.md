@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
+milestone: v2.0.0
 milestone_name: Code Review Remediation
 status: completed
-stopped_at: Milestone v1.2 shipped
+stopped_at: Milestone v2.0.0 shipped
 last_updated: "2026-07-01T16:05:00.000Z"
-last_activity: 2026-07-01 -- v1.2 milestone completed
+last_activity: 2026-07-01 -- v2.0.0 milestone completed
 progress:
   total_phases: 4
   completed_phases: 4
@@ -18,7 +18,7 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-01 after v1.2)
+See: .planning/PROJECT.md (updated 2026-07-01 after v2.0.0)
 
 **Core value:** A developer can define a materialized view from a stream, publish events, and query the current state with `SELECT ... WHERE ...` — zero infrastructure beyond NATS.
 
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-07-01 after v1.2)
 
 ## Current Position
 
-Status: ✅ v1.2 shipped (Phases 8-11 complete)
-Last activity: 2026-07-01 — v1.2 milestone completed
+Status: ✅ v2.0.0 shipped (Phases 8-11 complete)
+Last activity: 2026-07-01 — v2.0.0 milestone completed
 
 ## Performance Metrics
 
