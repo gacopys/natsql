@@ -7,17 +7,18 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql/internal/cfg"
+	natsql "github.com/gacopys/natsql/v2/internal/cfg"
 )
 
-// defaultMaxDeliver is the delivery budget used when ConsumerConfig.MaxDeliver
-// is not positive.
+// defaultMaxDeliver is the retry budget used when ConsumerConfig.MaxDeliver
+// is 0.
 const defaultMaxDeliver = 10
 
-// effectiveMaxDeliver returns the MaxDeliver that SetupConsumer configures for
-// cfg, so the materializer can recognize an event's final delivery attempt.
-func effectiveMaxDeliver(cfg natsql.ConsumerConfig) int {
-	if cfg.MaxDeliver <= 0 {
+// retryBudget returns how many deliveries an event gets before a transient
+// failure sends it to the DLQ: ConsumerConfig.MaxDeliver, defaultMaxDeliver
+// when it is 0, or -1 for no limit (WR-07).
+func retryBudget(cfg natsql.ConsumerConfig) int {
+	if cfg.MaxDeliver == 0 {
 		return defaultMaxDeliver
 	}
 	return cfg.MaxDeliver
@@ -51,8 +52,6 @@ func SetupConsumer(ctx context.Context, js jetstream.JetStream, streamName strin
 	}
 
 	// Apply defaults for zero values
-	maxDeliver := effectiveMaxDeliver(cfg)
-
 	ackWaitSeconds := cfg.AckWaitSeconds
 	if ackWaitSeconds <= 0 {
 		ackWaitSeconds = 30
@@ -67,7 +66,12 @@ func SetupConsumer(ctx context.Context, js jetstream.JetStream, streamName strin
 		Durable:       ConsumerName(viewName),
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
-		MaxDeliver:    maxDeliver,
+		// The server never gives up on an event (WR-07). The materializer
+		// dead-letters an event itself once its retry budget is used; if the
+		// server stopped at MaxDeliver instead, an event whose last attempt
+		// also failed to reach the DLQ, or whose AckWait kept expiring,
+		// would be dropped from both the view and the DLQ.
+		MaxDeliver:    -1,
 		AckWait:       time.Duration(ackWaitSeconds) * time.Second,
 		MaxAckPending: maxAckPending,
 		// CR-11: No InactiveThreshold — durable consumers persist until explicitly deleted.

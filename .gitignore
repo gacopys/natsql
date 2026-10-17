@@ -8,5 +8,7 @@ example-composite
 example-malformed
 example-views
 example-library
-natsql
+/natsql
 
+examples/06-cli-server/natsql-server
+examples/06-cli-server/server.log

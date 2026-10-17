@@ -5,8 +5,8 @@ Authoritative coding, testing, and style conventions for the natsql project. Eve
 ## 1. Language & Toolchain
 
 - **Go 1.22+** (constraint). `go.mod` requires `go 1.26.5` (the minimum for library users) and pins `toolchain go1.27.2`, which CI, lint and local builds use (`setup-go` reads the `toolchain` line).
-- **Module path**: `github.com/gacopys/natsql`. All internal imports use this prefix.
-- **No new top-level dependencies** without justification. The stack is intentionally minimal (vitess sqlparser, nats.go/jetstream, nats-server/v2, chi/v5, cobra, yaml.v3). Imports are grouped in `gci` order: stdlib, third-party, `github.com/gacopys/natsql`.
+- **Module path**: `github.com/gacopys/natsql/v2` (BLD-01: v2+ releases need the major-version suffix). All internal imports use this prefix; examples `require github.com/gacopys/natsql/v2` with a `replace ../../`.
+- **No new top-level dependencies** without justification. The stack is intentionally minimal (vitess sqlparser, nats.go/jetstream, nats-server/v2, chi/v5, cobra, yaml.v3). Imports are grouped in `gci` order: stdlib, third-party, `github.com/gacopys/natsql/v2`.
 
 ## 2. Package Layout
 
@@ -64,15 +64,16 @@ natsql/                       # public facade: New, NewWithNATS, NewEmbedded, Qu
 - Constructors named `New…` (`New`, `NewWithNATS`, `NewEmbedded`). `New…Embedded` owns the embedded NATS lifecycle.
 - Variadic options pattern: `type Option func(*Engine)`; functional options `WithLogger`, `WithHTTPServer`, `WithQueryPort`. Validate the zero state inside the constructor.
 - `SetDefaults()` and `Validate()` are called automatically by the public facade constructors — callers don't have to remember. `Validate()` collects *all* errors and returns one joined message, not first-fail.
-- Ownership is explicit in doc comments: `NewWithNATS` "owns `nc.Close()`"; `New` does not. `Close()` is idempotent and safe to call multiple times.
+- Ownership is explicit in doc comments: `NewWithNATS` "owns `nc.Close()`"; `New` does not. `Close()` is safe to call multiple times and concurrently: owned resources are released once, and calls on an engine that isn't running return `ErrNotStarted`.
 
 ## 7. Concurrency
 
 - Each view's materializer runs events **sequentially in one goroutine** (single durable pull consumer, no worker pool). This preserves JetStream per-subject ordering — see ARCHITECTURE.md. Do NOT reintroduce parallel event processing.
-- `Engine` guards mutable state (`started`, `kv`, `httpServer`) with `sync.Mutex`. `Query` lazy-initializes the KV under the lock.
-- `sync.WaitGroup` tracks materializer + HTTP goroutines; `Close()` waits on it.
-- `atomic.Int64` for counters (event count).
-- Graceful shutdown ordering is fixed (D-57): HTTP shutdown → NATS unsubscribe → drain signal → cancel context → `wg.Wait()`. Don't reorder.
+- `Engine` has two locks (LC-04): `lifecycle` serializes `Start`/`Close`/`DropView` and may be held across I/O; `mu` guards the running state and the KV handle and is **never** held across I/O. `Query` and `Stats` never take `lifecycle`.
+- Everything `Start` acquires goes into one `running` struct, so a failed `Start` and `Close` release it the same way (LC-01). Long-lived goroutines use `context.WithoutCancel` of the `Start` ctx (LC-02).
+- `sync.WaitGroup` (`WaitGroup.Go`) tracks view supervisors and the HTTP goroutine; `Close()` waits on them.
+- `atomic.Int64` for counters (events, queries).
+- Graceful shutdown ordering is fixed (D-57): HTTP shutdown → NATS handler close (waits for in-flight queries) → drain signal → wait for drains (bounded) → cancel context → wait. Don't reorder.
 - Full-scan query path uses a 16-worker semaphore (`fullScanWorkers`) — that's read-path parallelism, fine; write path must stay sequential.
 
 ## 8. Code Style (enforced)
@@ -80,7 +81,7 @@ natsql/                       # public facade: New, NewWithNATS, NewEmbedded, Qu
 `.golangci.yml` enables ~30 linters. Notable ones and what they force:
 
 - `gofumpt` — stricter gofmt. Run `make lint-fix` before committing.
-- `gci` — import grouping (stdlib / third-party / `github.com/gacopys/natsql`).
+- `gci` — import grouping (stdlib / third-party / `github.com/gacopys/natsql/v2`).
 - `errcheck` with `check-type-assertions: true` — no unchecked type assertions.
 - `exhaustive` — every enum switch must have a `default` or cover all cases (e.g. `ColumnType`, `Op`).
 - `errorlint` — proper error wrapping/comparison (`errors.Is`, not `==`).
@@ -133,10 +134,11 @@ go test -race -count=1 -coverprofile=coverage.out -v ./...    # make test
 
 ## 12. Examples
 
-- One self-contained Go program per directory under `examples/`, each with its own `go.mod` (built by `make examples` via `cd dir && go build .`).
+- One self-contained Go program per directory under `examples/`, each with its own `go.mod` (`make examples` builds every module and stops at the first failure).
 - `examples/NN-name/main.go`, numbered, with a README per directory. Start with `natsql.NewEmbedded` (zero infra) unless demonstrating an external NATS mode.
-- Examples must compile (`make examples` in CI) — check every error, own `eng.Close()` via `defer`.
-- Add a row to the table in `README.md` and `examples/README.md` when introducing a new example.
+- **Examples are tests.** Each one checks its results and exits non-zero on a wrong one: `main` calls `run() error` and `log.Fatal`s its error, so deferred `eng.Close()` calls still run; wait for materialization by polling (`waitForRows`), never a fixed `Sleep`; compare rows and values, don't just print them. Check every error.
+- CI (`examples.yml`) runs every example with `examples/run.sh <name>`, and fails if an `examples/NN-*` directory is missing from its matrix. Examples that need special handling (the CLI server, the benchmark's dataset size) are handled in `run.sh`. `make examples-run` runs them all locally.
+- Add a row to the table in `README.md` and `examples/README.md` when introducing a new example, and add it to the `examples.yml` matrix.
 
 ## 13. Git & CI
 

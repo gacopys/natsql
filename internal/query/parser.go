@@ -1,6 +1,7 @@
 package query
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -52,6 +53,7 @@ func Parse(sql string) (*ValidatedQuery, error) {
 		if err != nil {
 			return nil, err
 		}
+		q.HasLimit = true
 	}
 
 	return q, nil
@@ -218,7 +220,9 @@ func extractValue(expr sqlparser.Expr) (any, error) {
 	}
 }
 
-// literalToGo converts a vitess Literal to a Go value.
+// literalToGo converts a vitess Literal to a Go value. Integers that fit
+// int64 become int64; every other number stays json.Number, keeping the
+// literal's exact digits for PK keys (WR-06).
 func literalToGo(lit *sqlparser.Literal) any {
 	switch lit.Type {
 	case sqlparser.StrVal:
@@ -228,20 +232,21 @@ func literalToGo(lit *sqlparser.Literal) any {
 		if err == nil {
 			return n
 		}
-		return lit.Val
+		return json.Number(lit.Val)
 	case sqlparser.FloatVal, sqlparser.DecimalVal:
-		f, err := strconv.ParseFloat(lit.Val, 64)
-		if err == nil {
-			return f
-		}
-		return lit.Val
+		return json.Number(lit.Val)
 	default:
 		return lit.Val
 	}
 }
 
-// extractLimit extracts the limit value from a vitess Limit clause.
+// extractLimit extracts the limit value from a vitess Limit clause. OFFSET
+// (including the "LIMIT offset, count" form) is rejected rather than ignored
+// (QE-03).
 func extractLimit(limit *sqlparser.Limit) (int, error) {
+	if limit.Offset != nil {
+		return 0, errors.New("unsupported: OFFSET is not supported in v1")
+	}
 	lit, ok := limit.Rowcount.(*sqlparser.Literal)
 	if !ok {
 		return 0, fmt.Errorf("unsupported LIMIT expression: %T", limit.Rowcount)

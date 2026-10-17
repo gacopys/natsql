@@ -1,6 +1,6 @@
-.PHONY: all build lint lint-fix vuln test coverage examples gocyclo dupl generate
+.PHONY: all build lint lint-fix vuln test coverage examples examples-run gocyclo dupl generate
 
-all: lint build test coverage examples
+all: lint build test coverage examples examples-run
 
 build: generate
 	go build ./...
@@ -22,15 +22,18 @@ coverage:
 	@echo "━━━ Coverage per function ━━━"
 	@go tool cover -func=coverage.out
 
+# examples builds every example module (including examples/06-cli-server/client)
+# and stops at the first failure (BLD-04).
 examples: generate
-	@for dir in examples/*/; do \
-		if [ -f "$$dir/go.mod" ]; then \
-			echo "Building $$dir..."; \
-			(cd "$$dir" && go build .); \
-		else \
-			echo "Skipping $$dir (no go.mod)"; \
-		fi \
+	@set -e; for mod in $$(find examples -name go.mod | sort); do \
+		dir=$$(dirname "$$mod"); \
+		echo "Building $$dir..."; \
+		(cd "$$dir" && go build -o /dev/null .); \
 	done
+
+# examples-run runs every example, as CI does; each one checks its results.
+examples-run: generate
+	@examples/run.sh
 
 GOCYCLO := $(shell go env GOPATH)/bin/gocyclo
 

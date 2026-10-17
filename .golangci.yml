@@ -58,7 +58,7 @@ linters:
             - "**/internal/**/*.go"
             - "!**/*_test.go"
           deny:
-            - pkg: "github.com/gacopys/natsql$"
+            - pkg: "github.com/gacopys/natsql/v2$"
               desc: "internal packages must not import the root natsql package (import cycle risk)"
 
     errcheck:
@@ -175,10 +175,10 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/gacopys/natsql)
+        - prefix(github.com/gacopys/natsql/v2)
       custom-order: true
     gofumpt:
-      module-path: github.com/gacopys/natsql
+      module-path: github.com/gacopys/natsql/v2
   exclusions:
     generated: lax
     paths:

@@ -7,6 +7,8 @@
 //  2. Creates two views filtering different subjects (user.created vs user.deleted)
 //  3. Publishes events to both subjects
 //  4. Verifies each view only sees its subset
+//
+// The program checks every result and exits non-zero if one is wrong.
 
 package main
 
@@ -15,14 +17,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
@@ -52,72 +62,89 @@ func main() {
 
 	eng, err := natsql.NewEmbedded(cfg)
 	if err != nil {
-		log.Fatalf("NewEmbedded: %v", err)
+		return fmt.Errorf("NewEmbedded: %w", err)
 	}
 	defer eng.Close()
 
 	js, err := jetstream.New(eng.NC())
 	if err != nil {
-		log.Fatalf("JetStream: %v", err)
+		return fmt.Errorf("JetStream: %w", err)
 	}
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "all-events", Subjects: []string{"all-events.>"},
 	}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 
 	if err := eng.Start(ctx); err != nil {
-		log.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
 	fmt.Println("✓ Engine started with source_subject filtering")
 
-	fmt.Println("Publishing to all-events.user.created:")
-	for _, e := range []string{
-		`{"id":"u1","name":"Alice"}`,
-		`{"id":"u2","name":"Bob"}`,
-	} {
-		if _, err := js.Publish(ctx, "all-events.user.created", []byte(e)); err != nil {
-			log.Fatalf("Publish: %v", err)
+	publish := map[string][]string{
+		"all-events.user.created": {`{"id":"u1","name":"Alice"}`, `{"id":"u2","name":"Bob"}`},
+		"all-events.user.deleted": {`{"id":"u3","name":"Carol"}`},
+		"all-events.user.renamed": {`{"id":"u4","name":"Dave"}`}, // matches neither view
+	}
+	for _, subject := range []string{"all-events.user.created", "all-events.user.deleted", "all-events.user.renamed"} {
+		fmt.Printf("Publishing to %s:\n", subject)
+		for _, e := range publish[subject] {
+			if _, err := js.Publish(ctx, subject, []byte(e)); err != nil {
+				return fmt.Errorf("Publish: %w", err)
+			}
+			fmt.Printf("  → %s\n", e)
 		}
-		fmt.Printf("  → %s\n", e)
 	}
 
-	fmt.Println("Publishing to all-events.user.deleted:")
-	for _, e := range []string{
-		`{"id":"u3","name":"Carol"}`,
-	} {
-		if _, err := js.Publish(ctx, "all-events.user.deleted", []byte(e)); err != nil {
-			log.Fatalf("Publish: %v", err)
-		}
-		fmt.Printf("  → %s\n", e)
+	views := []struct{ view, wantIDs string }{
+		{"user_creates", "u1,u2"},
+		{"user_deletes", "u3"},
 	}
-
-	time.Sleep(time.Second)
-
-	fmt.Println()
-	fmt.Println("── Query user_creates ──")
-	res := eng.Query(ctx, "SELECT * FROM user_creates WHERE user_id = 'u1'")
-	pretty(res, "user_creates (should have u1)")
-
-	res = eng.Query(ctx, "SELECT * FROM user_creates WHERE user_id != ''")
-	fmt.Printf("  Total rows in user_creates: %d\n", len(res.Results))
-
-	fmt.Println("── Query user_deletes ──")
-	res = eng.Query(ctx, "SELECT * FROM user_deletes WHERE user_id = 'u3'")
-	pretty(res, "user_deletes (should have u3)")
-
-	res = eng.Query(ctx, "SELECT * FROM user_deletes WHERE user_id != ''")
-	fmt.Printf("  Total rows in user_deletes: %d\n", len(res.Results))
+	for _, v := range views {
+		fmt.Printf("\n── Query %s ──\n", v.view)
+		sql := "SELECT * FROM " + v.view + " WHERE user_id != ''"
+		rows, err := waitForRows(ctx, eng, sql, strings.Count(v.wantIDs, ",")+1)
+		if err != nil {
+			return err
+		}
+		if got := column(rows, "user_id"); got != v.wantIDs {
+			return fmt.Errorf("%s holds %s, want %s", v.view, got, v.wantIDs)
+		}
+		b, _ := json.MarshalIndent(rows, "    ", "  ") // rows always encode: they came from JSON
+		fmt.Printf("  ✓ %d rows: %s\n", len(rows), b)
+	}
 
 	fmt.Println("\n✅ source_subject filtering isolates views on the same stream!")
+	return nil
 }
 
-func pretty(r *natsql.QueryResult, label string) {
-	if r.Error != nil {
-		fmt.Printf("  ✗ %s: %s\n", label, *r.Error)
-		return
+// column returns one column of rows as sorted, comma-joined text, so a
+// result can be compared regardless of row order.
+func column(rows []map[string]any, col string) string {
+	vals := make([]string, 0, len(rows))
+	for _, r := range rows {
+		vals = append(vals, fmt.Sprint(r[col]))
 	}
-	b, _ := json.MarshalIndent(r.Results, "    ", "  ")
-	fmt.Printf("  ✓ %s: %s\n", label, string(b))
+	slices.Sort(vals)
+	return strings.Join(vals, ",")
+}
+
+// waitForRows runs sql until it returns want rows, so the example doesn't
+// depend on how quickly events are materialized. It gives up after 10s.
+func waitForRows(ctx context.Context, eng *natsql.Engine, sql string, want int) ([]map[string]any, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res := eng.Query(ctx, sql)
+		if res.Error != nil {
+			return nil, fmt.Errorf("%s: %s", sql, *res.Error)
+		}
+		if len(res.Results) == want {
+			return res.Results, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: got %d rows, want %d", sql, len(res.Results), want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

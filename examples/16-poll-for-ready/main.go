@@ -5,8 +5,10 @@
 // What it does:
 //  1. Creates view "orders" with PK order_id, columns product/amount
 //  2. Publishes 30 events
-//  3. Polls with a loop until count >= 30, showing progress
+//  3. Polls with a loop until all 30 rows are materialized, showing progress
 //  4. Demonstrates LIMIT query
+//
+// The program checks every result and exits non-zero if one is wrong.
 
 package main
 
@@ -19,10 +21,16 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
@@ -42,23 +50,23 @@ func main() {
 
 	eng, err := natsql.NewEmbedded(cfg)
 	if err != nil {
-		log.Fatalf("NewEmbedded: %v", err)
+		return fmt.Errorf("NewEmbedded: %w", err)
 	}
 	defer eng.Close()
 
 	js, err := jetstream.New(eng.NC())
 	if err != nil {
-		log.Fatalf("JetStream: %v", err)
+		return fmt.Errorf("JetStream: %w", err)
 	}
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "order-stream", Subjects: []string{"orders.>"},
 	}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 
 	if err := eng.Start(ctx); err != nil {
-		log.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
 	fmt.Println("✓ Engine started")
 
@@ -66,45 +74,64 @@ func main() {
 	fmt.Printf("Publishing %d orders...\n", total)
 	products := []string{"Widget", "Gadget", "Doohickey", "Thingamabob", "Whatsit"}
 
-	for i := 0; i < total; i++ {
+	for i := range total {
 		event := fmt.Sprintf(`{"order_id":"ord-%03d","product":"%s","amount":%.2f}`,
 			i, products[i%len(products)], float64(i)*1.5+10.0)
 		if _, err := js.Publish(ctx, "orders.created", []byte(event)); err != nil {
-			log.Fatalf("Publish: %v", err)
+			return fmt.Errorf("Publish: %w", err)
 		}
 	}
 	fmt.Println()
 
+	if err := pollForRows(ctx, eng, total); err != nil {
+		return err
+	}
+
+	fmt.Println("── LIMIT query ──")
+	res := eng.Query(ctx, "SELECT * FROM orders WHERE order_id != '' LIMIT 5")
+	if res.Error != nil || len(res.Results) != 5 {
+		return fmt.Errorf("LIMIT 5 returned %+v, want 5 rows", res)
+	}
+	b, _ := json.MarshalIndent(res.Results, "    ", "  ") // rows always encode: they came from JSON
+	fmt.Printf("  ✓ LIMIT 5:\n%s\n", string(b))
+
+	res = eng.Query(ctx, "SELECT amount FROM orders WHERE order_id = 'ord-029'")
+	if res.Error != nil || len(res.Results) != 1 || fmt.Sprint(res.Results[0]["amount"]) != "53.50" {
+		return fmt.Errorf("ord-029 = %+v, want amount 53.50", res)
+	}
+	fmt.Printf("  ✓ Last order: %v\n", res.Results)
+
+	fmt.Println("✅ Polling for materialization readiness works!")
+	return nil
+}
+
+// pollForRows queries the view until it holds total rows, printing progress,
+// and gives up after 10 seconds.
+func pollForRows(ctx context.Context, eng *natsql.Engine, total int) error {
 	fmt.Println("Polling for materialization readiness...")
 	fmt.Printf("  Timeout: 10s | Target: %d rows\n\n", total)
 
 	pollStart := time.Now()
-	var lastCount int
+	lastCount := -1
 	for {
 		res := eng.Query(ctx, "SELECT * FROM orders WHERE order_id != ''")
 		if res.Error != nil {
-			log.Fatalf("Poll query: %s", *res.Error)
+			return fmt.Errorf("poll query: %s", *res.Error)
 		}
 		count := len(res.Results)
 		if count != lastCount {
 			fmt.Printf("  Progress: %d / %d rows\n", count, total)
 			lastCount = count
 		}
-		if count >= total {
+		if count == total {
 			break
 		}
-		if time.Since(pollStart) > 10*time.Second {
-			log.Fatalf("Timeout: got %d / %d rows after %v", count, total, time.Since(pollStart))
+		if count > total || time.Since(pollStart) > 10*time.Second {
+			return fmt.Errorf("got %d / %d rows after %v", count, total, time.Since(pollStart))
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	fmt.Printf("\n✓ All %d rows materialized in %v\n\n", total, time.Since(pollStart))
-
-	fmt.Println("── LIMIT query ──")
-	res := eng.Query(ctx, "SELECT * FROM orders WHERE order_id != '' LIMIT 5")
-	b, _ := json.MarshalIndent(res.Results, "    ", "  ")
-	fmt.Printf("  ✓ LIMIT 5:\n%s\n", string(b))
-
-	fmt.Println("✅ Polling for materialization readiness works!")
+	return nil
 }

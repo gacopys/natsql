@@ -1,11 +1,13 @@
-// 09-key-separator — custom key_separator and sanitized PK values.
+// 09-key-separator — custom key_separator and escaped PK values.
 //
 // Run: go run .
 //
 // What it does:
 //  1. Creates view "tenant_items" with composite key [tenant_id, item_id] and separator "-"
-//  2. Publishes events with tenant_ids containing special characters
-//  3. Queries by composite PK, demonstrating key sanitization
+//  2. Publishes events whose key parts contain the separator and other special characters
+//  3. Queries by composite PK, showing that such keys stay distinct and reachable
+//
+// The program checks every result and exits non-zero if one is wrong.
 
 package main
 
@@ -18,10 +20,16 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
@@ -42,68 +50,88 @@ func main() {
 
 	eng, err := natsql.NewEmbedded(cfg)
 	if err != nil {
-		log.Fatalf("NewEmbedded: %v", err)
+		return fmt.Errorf("NewEmbedded: %w", err)
 	}
 	defer eng.Close()
 
 	js, err := jetstream.New(eng.NC())
 	if err != nil {
-		log.Fatalf("JetStream: %v", err)
+		return fmt.Errorf("JetStream: %w", err)
 	}
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "tenant-stream", Subjects: []string{"tenants.>"},
 	}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 
 	if err := eng.Start(ctx); err != nil {
-		log.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
 	fmt.Println("✓ Engine started with key_separator '-'")
 
-	events := []struct{ id, tenant, item, label string }{
-		{"ev1", "acme", "widget", "Acme Widget"},
-		{"ev2", "acme", "gadget", "Acme Gadget"},
-		{"ev3", "globex-sales", "widget", "Globex Widget"},
-		{"ev4", "foo/bar", "doohickey", "FooBar Doohickey"},
+	// ("globex-sales", "widget") and ("globex", "sales-widget") would both
+	// join to "globex-sales-widget"; natsql escapes the separator inside key
+	// parts, so they remain two rows.
+	events := []struct{ tenant, item, label string }{
+		{"acme", "widget", "Acme Widget"},
+		{"acme", "gadget", "Acme Gadget"},
+		{"globex-sales", "widget", "Globex Sales Widget"},
+		{"globex", "sales-widget", "Globex Sales-Widget"},
+		{"foo/bar", "doohickey", "FooBar Doohickey"},
+		{"ops@example.com", "pager", "Ops Pager"},
 	}
 
-	fmt.Printf("Key separator: \"-\"\n")
-	fmt.Printf("Valid KV key chars: [-/_=.a-zA-Z0-9]\n\n")
-
+	fmt.Printf("Key separator: \"-\"\n\n")
 	for _, ev := range events {
-		event := fmt.Sprintf(`{"tenant_id":"%s","item_id":"%s","label":"%s"}`,
-			ev.tenant, ev.item, ev.label)
-		if _, err := js.Publish(ctx, "tenants.event", []byte(event)); err != nil {
-			log.Fatalf("Publish: %v", err)
+		event, err := json.Marshal(map[string]string{"tenant_id": ev.tenant, "item_id": ev.item, "label": ev.label})
+		if err != nil {
+			return fmt.Errorf("encoding event: %w", err)
 		}
-		fmt.Printf("  Published: tenant_id=%s (raw key part would need sanitization for KV)\n", ev.tenant)
+		if _, err := js.Publish(ctx, "tenants.event", event); err != nil {
+			return fmt.Errorf("Publish: %w", err)
+		}
+		fmt.Printf("  Published: tenant_id=%q item_id=%q\n", ev.tenant, ev.item)
 	}
 
-	time.Sleep(time.Second)
+	if _, err := waitForRows(ctx, eng, "SELECT label FROM tenant_items WHERE label != ''", len(events)); err != nil {
+		return fmt.Errorf("every event should be its own row: %w", err)
+	}
 
 	fmt.Println()
-	fmt.Println("── Query: WHERE tenant_id='acme' AND item_id='widget' ──")
-	res := eng.Query(ctx, "SELECT * FROM tenant_items WHERE tenant_id = 'acme' AND item_id = 'widget'")
-	pretty(res, "acme:widget")
+	for _, ev := range events {
+		sql := fmt.Sprintf("SELECT * FROM tenant_items WHERE tenant_id = '%s' AND item_id = '%s'", ev.tenant, ev.item)
+		fmt.Printf("── %s ──\n", sql)
+		rows, err := waitForRows(ctx, eng, sql, 1)
+		if err != nil {
+			return err
+		}
+		if got := fmt.Sprint(rows[0]["label"]); got != ev.label {
+			return fmt.Errorf("%s: label %q, want %q", sql, got, ev.label)
+		}
+		b, _ := json.Marshal(rows) // rows always encode: they came from JSON
+		fmt.Printf("  ✓ %s\n", b)
+	}
 
-	fmt.Println("── Query: WHERE tenant_id='globex-sales' AND item_id='widget' ──")
-	res = eng.Query(ctx, "SELECT * FROM tenant_items WHERE tenant_id = 'globex-sales' AND item_id = 'widget'")
-	pretty(res, "globex-sales:widget")
-
-	fmt.Println("── Query: WHERE tenant_id='foo/bar' AND item_id='doohickey' ──")
-	res = eng.Query(ctx, "SELECT * FROM tenant_items WHERE tenant_id = 'foo/bar' AND item_id = 'doohickey'")
-	pretty(res, "foo/bar:doohickey")
-
-	fmt.Println("\n✅ Custom key_separator works (KV keys use \"-\" between PK parts)!")
+	fmt.Println("\n✅ Custom key_separator works, and keys containing it stay distinct!")
+	return nil
 }
 
-func pretty(r *natsql.QueryResult, label string) {
-	if r.Error != nil {
-		fmt.Printf("  ✗ %s: %s\n", label, *r.Error)
-		return
+// waitForRows runs sql until it returns want rows, so the example doesn't
+// depend on how quickly events are materialized. It gives up after 10s.
+func waitForRows(ctx context.Context, eng *natsql.Engine, sql string, want int) ([]map[string]any, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res := eng.Query(ctx, sql)
+		if res.Error != nil {
+			return nil, fmt.Errorf("%s: %s", sql, *res.Error)
+		}
+		if len(res.Results) == want {
+			return res.Results, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: got %d rows, want %d", sql, len(res.Results), want)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	b, _ := json.MarshalIndent(r.Results, "    ", "  ")
-	fmt.Printf("  ✓ %s: %s\n", label, string(b))
 }

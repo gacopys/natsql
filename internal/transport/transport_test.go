@@ -3,9 +3,11 @@ package transport_test
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,8 +15,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/query"
-	"github.com/gacopys/natsql/internal/transport"
+	"github.com/gacopys/natsql/v2/internal/query"
+	"github.com/gacopys/natsql/v2/internal/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,25 +72,47 @@ func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn, jetstream.JetS
 // ---------------------------------------------------------------------------
 
 // TestRegisterNATSHandler_FlushError verifies that RegisterNATSHandler
-// returns any Flush error to the caller.
+// reports a failed flush after a successful subscribe, and removes the
+// subscription it couldn't confirm (CR-19, TS-01).
 func TestRegisterNATSHandler_FlushError(t *testing.T) {
-	srv, nc, js := startEmbeddedNATS(t)
-	defer srv.Shutdown()
+	transport.SetFlushTimeout(t, 200*time.Millisecond)
+
+	srv, _, _ := startEmbeddedNATS(t)
+	nc, err := nats.Connect(srv.ClientURL(), nats.ReconnectWait(time.Hour), nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
 	defer nc.Close()
-	_ = js
 
-	handler := &mockHandler{
-		result: &query.QueryResult{},
+	srv.Shutdown()
+	deadline := time.Now().Add(5 * time.Second)
+	for !nc.IsReconnecting() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !nc.IsReconnecting() {
+		t.Fatal("connection did not notice the server shutdown")
 	}
 
-	// Close NATS connection before registering — Flush will fail
-	nc.Close()
-
-	_, err := transport.RegisterNATSHandler(nc, handler)
-	if err == nil {
-		t.Fatal("expected error from RegisterNATSHandler with closed connection, got nil")
+	// Subscribing succeeds while reconnecting; only the flush can fail.
+	_, err = transport.RegisterNATSHandler(nc, "natsql.query", &mockHandler{result: &query.QueryResult{}}, quietLogger())
+	if err == nil || !strings.Contains(err.Error(), "flushing subscription") {
+		t.Fatalf("RegisterNATSHandler on a disconnected connection = %v, want a flush error", err)
 	}
-	t.Logf("Got expected error: %v", err)
+	if n := nc.NumSubscriptions(); n != 0 {
+		t.Errorf("%d subscriptions left after the failed registration, want 0", n)
+	}
+}
+
+func quietLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// registerNATS registers handler on natsql.query and closes it at cleanup.
+func registerNATS(t *testing.T, nc *nats.Conn, handler transport.QueryHandler) {
+	t.Helper()
+	h, err := transport.RegisterNATSHandler(nc, "natsql.query", handler, quietLogger())
+	if err != nil {
+		t.Fatalf("RegisterNATSHandler failed: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
 }
 
 // TestNATSRequestReply verifies that a NATS request on "natsql.query"
@@ -107,11 +131,7 @@ func TestNATSRequestReply(t *testing.T) {
 		},
 	}
 
-	sub, err := transport.RegisterNATSHandler(nc, handler)
-	if err != nil {
-		t.Fatalf("RegisterNATSHandler failed: %v", err)
-	}
-	defer func() { _ = sub.Unsubscribe() }()
+	registerNATS(t, nc, handler)
 
 	// Send request
 	msg, err := nc.Request("natsql.query", []byte("SELECT * FROM test_users WHERE id = 'u1'"), 2*time.Second)
@@ -149,11 +169,7 @@ func TestNATSRequestError(t *testing.T) {
 		},
 	}
 
-	sub, err := transport.RegisterNATSHandler(nc, handler)
-	if err != nil {
-		t.Fatalf("RegisterNATSHandler failed: %v", err)
-	}
-	defer func() { _ = sub.Unsubscribe() }()
+	registerNATS(t, nc, handler)
 
 	msg, err := nc.Request("natsql.query", []byte("INVALID SQL"), 2*time.Second)
 	if err != nil {
@@ -183,7 +199,7 @@ func TestHTTPQueryEndpoint(t *testing.T) {
 	}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -222,7 +238,7 @@ func TestHTTPInvalidBody(t *testing.T) {
 	}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -250,7 +266,7 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 	handler := &mockHandler{result: &query.QueryResult{}}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -281,7 +297,7 @@ func TestHTTPBodyTrailingData(t *testing.T) {
 	}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -312,7 +328,7 @@ func TestHTTPBodyTrailingWhitespaceOK(t *testing.T) {
 	}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -341,7 +357,7 @@ func TestHTTPContentType(t *testing.T) {
 	}
 
 	router := transport.NewRouter()
-	transport.RegisterHTTPHandler(router, handler)
+	transport.RegisterHTTPHandler(router, handler, nil)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -360,5 +376,176 @@ func TestHTTPContentType(t *testing.T) {
 	ct := resp.Header.Get("Content-Type")
 	if ct != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+}
+
+// funcHandler answers queries with a function.
+type funcHandler func(ctx context.Context, sql string) *query.QueryResult
+
+func (f funcHandler) Query(ctx context.Context, sql string) *query.QueryResult { return f(ctx, sql) }
+
+func requestResult(t *testing.T, nc *nats.Conn, sql string, timeout time.Duration) query.QueryResult {
+	t.Helper()
+	msg, err := nc.Request("natsql.query", []byte(sql), timeout)
+	if err != nil {
+		t.Fatalf("request %q failed: %v", sql, err)
+	}
+	var result query.QueryResult
+	if err := json.Unmarshal(msg.Data, &result); err != nil {
+		t.Fatalf("reply %q is not a JSON envelope: %v", msg.Data, err)
+	}
+	return result
+}
+
+// TestNATSHandler_SlowQueryDoesNotBlockOthers verifies that requests are
+// served concurrently, so a long scan doesn't hold up a PK lookup queued
+// behind it (TR-01).
+func TestNATSHandler_SlowQueryDoesNotBlockOthers(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	release := make(chan struct{})
+	defer close(release)
+	registerNATS(t, nc, funcHandler(func(ctx context.Context, sql string) *query.QueryResult {
+		if sql == "slow" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return &query.QueryResult{Results: []map[string]any{{"sql": sql}}}
+	}))
+
+	if err := nc.PublishRequest("natsql.query", nats.NewInbox(), []byte("slow")); err != nil {
+		t.Fatalf("publishing the slow query failed: %v", err)
+	}
+	result := requestResult(t, nc, "fast", time.Second)
+	if len(result.Results) != 1 || result.Results[0]["sql"] != "fast" {
+		t.Errorf("fast query result = %+v", result)
+	}
+}
+
+// TestNATSHandler_QueueGroup verifies that engines sharing the query subject
+// split requests instead of each executing every one (TR-01).
+func TestNATSHandler_QueueGroup(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	var calls atomic.Int32
+	counting := funcHandler(func(context.Context, string) *query.QueryResult {
+		calls.Add(1)
+		return &query.QueryResult{Results: []map[string]any{}}
+	})
+	registerNATS(t, nc, counting)
+	registerNATS(t, nc, counting)
+
+	for range 10 {
+		requestResult(t, nc, "q", time.Second)
+	}
+	if got := calls.Load(); got != 10 {
+		t.Errorf("10 requests executed %d queries, want 10", got)
+	}
+}
+
+// TestNATSHandler_ResultTooLarge verifies that a result over the max
+// payload gets an error reply instead of no reply (TR-02).
+func TestNATSHandler_ResultTooLarge(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	big := strings.Repeat("x", int(nc.MaxPayload()))
+	registerNATS(t, nc, &mockHandler{result: &query.QueryResult{Results: []map[string]any{{"big": big}}}})
+
+	result := requestResult(t, nc, "SELECT * FROM v WHERE id != ''", 2*time.Second)
+	if result.Error == nil || !strings.Contains(*result.Error, "result too large") {
+		t.Errorf("oversized result reply = %+v, want a too-large error", result)
+	}
+}
+
+// TestNATSHandler_ErrorEnvelopeIsJSON verifies that an unencodable result
+// still gets a valid JSON error reply (TR-08).
+func TestNATSHandler_ErrorEnvelopeIsJSON(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	registerNATS(t, nc, &mockHandler{result: &query.QueryResult{Results: []map[string]any{{"n": json.Number(`"invalid"`)}}}})
+	result := requestResult(t, nc, "q", 2*time.Second)
+	if result.Error == nil || !strings.Contains(*result.Error, "internal error") {
+		t.Errorf("reply = %+v, want an internal error", result)
+	}
+}
+
+// TestNATSHandler_CloseWaitsForInFlight verifies that Close lets a running
+// query finish and reply before returning.
+func TestNATSHandler_CloseWaitsForInFlight(t *testing.T) {
+	srv, nc, _ := startEmbeddedNATS(t)
+	defer srv.Shutdown()
+	defer nc.Close()
+
+	started := make(chan struct{})
+	h, err := transport.RegisterNATSHandler(nc, "natsql.query", funcHandler(func(context.Context, string) *query.QueryResult {
+		close(started)
+		time.Sleep(200 * time.Millisecond)
+		return &query.QueryResult{Results: []map[string]any{{"done": true}}}
+	}), quietLogger())
+	if err != nil {
+		t.Fatalf("RegisterNATSHandler failed: %v", err)
+	}
+
+	replies := make(chan *nats.Msg, 1)
+	go func() {
+		msg, err := nc.Request("natsql.query", []byte("q"), 5*time.Second)
+		if err != nil {
+			msg = nil // reported below as a missing reply
+		}
+		replies <- msg
+	}()
+	<-started
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	select {
+	case msg := <-replies:
+		if msg == nil || !strings.Contains(string(msg.Data), `"done":true`) {
+			t.Errorf("in-flight query reply = %v, want its result", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight query was never answered")
+	}
+	if err := h.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil", err)
+	}
+}
+
+type fakeHealth struct {
+	ready bool
+}
+
+func (f fakeHealth) Health() (bool, any) { return f.ready, map[string]any{"ready": f.ready} }
+
+// TestHTTPHealthProbes verifies the liveness and readiness endpoints
+// (OP-03).
+func TestHTTPHealthProbes(t *testing.T) {
+	for _, ready := range []bool{true, false} {
+		router := transport.NewRouter()
+		transport.RegisterHTTPHandler(router, &mockHandler{}, fakeHealth{ready: ready})
+
+		for path, want := range map[string]int{"/healthz": http.StatusOK, "/readyz": http.StatusServiceUnavailable} {
+			if ready {
+				want = http.StatusOK
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+			if w.Code != want {
+				t.Errorf("ready=%v GET %s = %d, want %d", ready, path, w.Code, want)
+			}
+			if !strings.Contains(w.Body.String(), `"ready":`) {
+				t.Errorf("ready=%v GET %s body = %q, want the status document", ready, path, w.Body.String())
+			}
+		}
 	}
 }

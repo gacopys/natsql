@@ -12,160 +12,189 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/kv"
 )
 
 const fullScanWorkers = 16
 
-// Execute performs a direct PK lookup using kv.Get().
-// Returns a single row or empty slice if not found.
-// If the plan has non-PK WHERE conditions, they are applied as a post-filter.
+// errScanIncomplete reports a full scan that ended before it had read every
+// row, so its results can't be told apart from "no more matches" (QE-02).
+var errScanIncomplete = errors.New("scan interrupted before all rows were read")
+
+// Execute reads each candidate key with kv.Get, in order, until Limit rows
+// are found. Missing keys are skipped, and every WHERE condition is applied
+// as a post-filter (CR-03).
 func (p *PKLookupPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
-	key := kv.BuildPKKey(p.ViewName, p.PKParts, p.Separator)
-	entry, err := kvb.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("PK lookup failed: %w", err)
-	}
-
-	var row map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(entry.Value()))
-	decoder.UseNumber() // CR-09: preserve exact numeric precision
-	if err := decoder.Decode(&row); err != nil {
-		return nil, fmt.Errorf("unmarshaling row: %w", err)
-	}
-
-	// Apply non-PK WHERE conditions as post-filter (FIX-ENG-01)
-	if len(p.Where) > 0 && !filterRow(row, p.Where) {
-		return nil, nil
-	}
-
-	return []map[string]any{projectRow(row, p.Columns)}, nil
-}
-
-// Execute performs a full scan over all KV keys for a view, applying
-// WHERE filters and LIMIT client-side. Keys outside the view prefix are skipped.
-// CR-09: Uses json.Decoder.UseNumber to preserve >2^53 integer precision.
-func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
-	prefix := p.ViewName + "/pk/"
-
-	watcher, err := kvb.WatchAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("watching keys: %w", err)
-	}
-	defer func() { _ = watcher.Stop() }() // best-effort stop; context may already be done
-
-	var (
-		mu      sync.Mutex
-		results []map[string]any
-		wg      sync.WaitGroup
-		sem     = make(chan struct{}, fullScanWorkers)
-		errCh   = make(chan error, 1)
-	)
-
-	for entry := range watcher.Updates() {
-		if entry == nil {
+	results := []map[string]any{}
+	for _, parts := range p.Keys {
+		if p.Limit > 0 && len(results) >= p.Limit {
 			break
 		}
-		if !strings.HasPrefix(entry.Key(), prefix) {
+		key := kv.BuildPKKey(p.ViewName, parts, p.Separator)
+		entry, err := kvb.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			continue
 		}
-
-		mu.Lock()
-		limitReached := p.Limit > 0 && len(results) >= p.Limit
-		mu.Unlock()
-		if limitReached || ctx.Err() != nil {
-			break
+		if err != nil {
+			return nil, fmt.Errorf("PK lookup failed: %w", err)
 		}
 
-		sem <- struct{}{}
-		wg.Add(1)
-		go p.processEntry(entry.Value(), &mu, &results, sem, &wg, errCh)
-	}
-
-	wg.Wait()
-
-	select {
-	case err := <-errCh:
-		return nil, err
-	default:
-	}
-
-	if p.Limit > 0 && len(results) > p.Limit {
-		results = results[:p.Limit]
-	}
-
-	if results == nil {
-		return []map[string]any{}, nil
+		row, err := decodeRow(entry.Value())
+		if err != nil {
+			return nil, err
+		}
+		if filterRow(row, p.Where) { // FIX-ENG-01
+			results = append(results, projectRow(row, p.Columns))
+		}
 	}
 	return results, nil
 }
 
-func (p *FullScanPlan) processEntry(data []byte, mu *sync.Mutex, results *[]map[string]any, sem chan struct{}, wg *sync.WaitGroup, errCh chan error) {
-	defer wg.Done()
-	defer func() { <-sem }()
-
-	mu.Lock()
-	alreadyFull := p.Limit > 0 && len(*results) >= p.Limit
-	mu.Unlock()
-	if alreadyFull {
-		return
-	}
-
-	var fullRow map[string]any
+// decodeRow decodes a stored row, keeping numbers as json.Number (CR-09:
+// exact precision beyond 2^53).
+func decodeRow(data []byte) (map[string]any, error) {
+	var row map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := decoder.Decode(&fullRow); err != nil {
-		select {
-		case errCh <- fmt.Errorf("unmarshaling row: %w", err):
-		default:
-		}
-		return
+	if err := decoder.Decode(&row); err != nil {
+		return nil, fmt.Errorf("unmarshaling row: %w", err)
 	}
-
-	if !filterRow(fullRow, p.Where) {
-		return
-	}
-
-	row := fullRow
-	if p.Columns != nil {
-		row = projectRow(fullRow, p.Columns)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if p.Limit > 0 && len(*results) >= p.Limit {
-		return
-	}
-	*results = append(*results, row)
+	return row, nil
 }
 
-// projectRow filters a row to only the requested columns.
-// If columns is nil (SELECT *), the row is returned as-is.
-// Missing columns in the projection are set to nil per D-31.
+// Execute reads every row of the view and applies WHERE filters and LIMIT
+// client-side. The server only sends this view's rows (PF-01) and skips
+// delete markers.
+//
+// The scan succeeds only after it has seen the watcher's end-of-snapshot
+// marker; if the context ends or the watcher closes first, it returns an
+// error rather than partial results (QE-02). It stops at the first row that
+// can't be decoded.
+func (p *FullScanPlan) Execute(ctx context.Context, kvb jetstream.KeyValue) ([]map[string]any, error) {
+	watcher, err := kvb.Watch(ctx, kv.PKFilter(p.ViewName), jetstream.IgnoreDeletes())
+	if err != nil {
+		return nil, fmt.Errorf("watching keys: %w", err)
+	}
+	defer stopWatcher(watcher)
+
+	scan := &fullScan{plan: p, sem: make(chan struct{}, fullScanWorkers)}
+	for {
+		select {
+		case <-ctx.Done():
+			scan.wg.Wait()
+			return nil, fmt.Errorf("%w: %w", errScanIncomplete, ctx.Err())
+		case entry, ok := <-watcher.Updates():
+			switch {
+			case !ok:
+				scan.wg.Wait()
+				if ctx.Err() != nil {
+					return nil, fmt.Errorf("%w: %w", errScanIncomplete, ctx.Err())
+				}
+				return nil, fmt.Errorf("%w: the watcher closed", errScanIncomplete)
+			case entry == nil: // every row of the initial snapshot has been read
+				return scan.result()
+			case scan.done():
+				return scan.result()
+			}
+			select {
+			case scan.sem <- struct{}{}:
+				scan.wg.Go(func() { scan.process(entry.Value()) })
+			case <-ctx.Done():
+				// This entry is skipped, so a later end-of-snapshot marker
+				// must not be taken as completion.
+				scan.wg.Wait()
+				return nil, fmt.Errorf("%w: %w", errScanIncomplete, ctx.Err())
+			}
+		}
+	}
+}
+
+// stopWatcher stops w and keeps draining its updates until nats.go closes
+// the channel (QE-04). The watch callback sends into a 256-entry channel
+// while holding the watcher's lock, so a scan that stops reading early would
+// otherwise leave the callback goroutine blocked forever.
+func stopWatcher(w jetstream.KeyWatcher) {
+	_ = w.Stop() // the subscription may already be gone with its context
+	go func() {
+		for range w.Updates() {
+		}
+	}()
+}
+
+// fullScan collects the rows of one FullScanPlan execution, decoding and
+// filtering entries on up to fullScanWorkers goroutines.
+type fullScan struct {
+	plan *FullScanPlan
+	sem  chan struct{}
+	wg   sync.WaitGroup
+
+	mu      sync.Mutex
+	results []map[string]any
+	err     error
+}
+
+// done reports whether the scan can stop reading: LIMIT rows were found or
+// a row failed to decode.
+func (s *fullScan) done() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err != nil || s.plan.Limit > 0 && len(s.results) >= s.plan.Limit
+}
+
+func (s *fullScan) process(data []byte) {
+	defer func() { <-s.sem }()
+	if s.done() {
+		return
+	}
+
+	row, err := decodeRow(data)
+	if err == nil && !filterRow(row, s.plan.Where) {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case err != nil:
+		if s.err == nil {
+			s.err = err
+		}
+	case s.plan.Limit == 0 || len(s.results) < s.plan.Limit:
+		s.results = append(s.results, projectRow(row, s.plan.Columns))
+	}
+}
+
+// result waits for in-flight rows and returns the rows found, or the first
+// decode error.
+func (s *fullScan) result() ([]map[string]any, error) {
+	s.wg.Wait()
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.results == nil {
+		return []map[string]any{}, nil
+	}
+	return s.results, nil
+}
+
+// projectRow returns the requested columns of a row, with nil for missing
+// ones (D-31). The planner expands SELECT * into the schema's columns; a nil
+// list (or a '*' entry), which only plans built by hand contain, selects the
+// row's public fields, i.e. those not starting with '_'.
 func projectRow(row map[string]any, columns []string) map[string]any {
-	if columns == nil { // SELECT * — exclude internal fields starting with _
-		projected := make(map[string]any, len(row))
+	if columns == nil {
+		columns = []string{"*"}
+	}
+	projected := make(map[string]any, len(columns))
+	for _, col := range columns {
+		if col != "*" {
+			projected[col] = row[col]
+			continue
+		}
 		for k, v := range row {
 			if !strings.HasPrefix(k, "_") {
 				projected[k] = v
 			}
-		}
-		return projected
-	}
-
-	projected := make(map[string]any, len(columns))
-	for _, col := range columns {
-		if col == "*" {
-			return row
-		}
-		val, ok := row[col]
-		if ok {
-			projected[col] = val
-		} else {
-			projected[col] = nil
 		}
 	}
 	return projected

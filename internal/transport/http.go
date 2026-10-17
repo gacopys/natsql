@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/gacopys/natsql/internal/transport/oapi"
+	"github.com/gacopys/natsql/v2/internal/transport/oapi"
 )
 
 const maxRequestBodySize = 1 << 20 // 1 MB
@@ -19,12 +19,21 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 // QueryRequest is the JSON body for POST /api/v1/query.
 type QueryRequest = oapi.QueryRequest
 
+// HealthReporter reports the engine's readiness for the /healthz and /readyz
+// probes (OP-03).
+type HealthReporter interface {
+	// Health returns whether the engine is ready to serve and a
+	// JSON-encodable status document describing why.
+	Health() (ready bool, status any)
+}
+
 // httpAdapter implements oapi.ServerInterface by delegating to a QueryHandler.
 // It preserves the canonical body validation (D-17/D-18, T-02-06): a 1 MiB
 // cap, a single JSON document requirement (no trailing non-whitespace data),
 // and the standard QueryResult envelope (D-29) as the response body.
 type httpAdapter struct {
 	handler QueryHandler
+	health  HealthReporter // nil: always ready
 }
 
 // RunQuery handles POST /api/v1/query.
@@ -66,12 +75,43 @@ func (a *httpAdapter) RunQuery(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result) // best-effort encode; response already committing
 }
 
-// RegisterHTTPHandler mounts the query endpoint on the chi router (D-37),
-// using the chi server interface generated from openapi.yaml. The endpoint
-// expects POST with JSON body {"sql": "..."} and returns the standard JSON
-// query result envelope per D-29.
-func RegisterHTTPHandler(router chi.Router, handler QueryHandler) {
-	_ = oapi.HandlerFromMux(&httpAdapter{handler: handler}, router)
+// GetHealth handles GET /healthz: the process is up and serving HTTP.
+func (a *httpAdapter) GetHealth(w http.ResponseWriter, _ *http.Request) {
+	_, status := a.status()
+	writeJSON(w, http.StatusOK, status)
+}
+
+// GetReadiness handles GET /readyz: 200 when the engine is ready, 503
+// otherwise, with the status document in both cases.
+func (a *httpAdapter) GetReadiness(w http.ResponseWriter, _ *http.Request) {
+	ready, status := a.status()
+	code := http.StatusOK
+	if !ready {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, status)
+}
+
+func (a *httpAdapter) status() (bool, any) {
+	if a.health == nil {
+		return true, map[string]any{"ready": true}
+	}
+	return a.health.Health()
+}
+
+func writeJSON(w http.ResponseWriter, code int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body) // best-effort; the status code is already sent
+}
+
+// RegisterHTTPHandler mounts the query endpoint and the /healthz and /readyz
+// probes on the chi router (D-37), using the chi server interface generated
+// from openapi.yaml. The query endpoint expects POST with JSON body
+// {"sql": "..."} and returns the standard JSON query result envelope per
+// D-29. A nil health reports the engine as always ready.
+func RegisterHTTPHandler(router chi.Router, handler QueryHandler, health HealthReporter) {
+	_ = oapi.HandlerFromMux(&httpAdapter{handler: handler, health: health}, router)
 }
 
 // NewRouter creates a chi router with standard middleware for the query API.

@@ -10,6 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// EngineStatus Engine status: `ready`, `started`, query counters and a `view_status` entry per view with its `state` (starting, running, restarting, failed, stopped), restart count, event counters and last error. See the Go `Stats` type for every field.
+type EngineStatus map[string]interface{}
+
 // QueryRequest The JSON body for POST /api/v1/query.
 type QueryRequest struct {
 	// Sql A single SELECT statement (no DML, no multi-statement).
@@ -33,6 +36,12 @@ type ServerInterface interface {
 	// Execute a read-only SQL query against the materialized views.
 	// (POST /api/v1/query)
 	RunQuery(w http.ResponseWriter, r *http.Request)
+	// Liveness probe.
+	// (GET /healthz)
+	GetHealth(w http.ResponseWriter, r *http.Request)
+	// Readiness probe.
+	// (GET /readyz)
+	GetReadiness(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -42,6 +51,18 @@ type Unimplemented struct{}
 // Execute a read-only SQL query against the materialized views.
 // (POST /api/v1/query)
 func (_ Unimplemented) RunQuery(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Liveness probe.
+// (GET /healthz)
+func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Readiness probe.
+// (GET /readyz)
+func (_ Unimplemented) GetReadiness(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -56,9 +77,34 @@ type MiddlewareFunc func(http.Handler) http.Handler
 
 // RunQuery operation middleware
 func (siw *ServerInterfaceWrapper) RunQuery(w http.ResponseWriter, r *http.Request) {
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RunQuery(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetHealth operation middleware
+func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Request) {
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetReadiness operation middleware
+func (siw *ServerInterfaceWrapper) GetReadiness(w http.ResponseWriter, r *http.Request) {
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReadiness(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -183,6 +229,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/v1/query", wrapper.RunQuery)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/healthz", wrapper.GetHealth)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/readyz", wrapper.GetReadiness)
 	})
 
 	return r

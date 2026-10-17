@@ -15,16 +15,20 @@ package natsql_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql"
-	"github.com/gacopys/natsql/internal/testutil"
+	natsql "github.com/gacopys/natsql/v2"
+	"github.com/gacopys/natsql/v2/internal/testutil"
 )
 
 // testRow is a row in the materialized view, keyed by user_id.
@@ -100,6 +104,9 @@ func requireError(t *testing.T, res *natsql.QueryResult, label string, substr st
 	if res.Error == nil {
 		t.Fatalf("[%s] expected error containing %q, got nil error with %d results",
 			label, substr, len(res.Results))
+	}
+	if !strings.Contains(*res.Error, substr) {
+		t.Fatalf("[%s] error %q does not contain %q", label, *res.Error, substr)
 	}
 }
 
@@ -413,21 +420,21 @@ func TestBlackBox_Queries(t *testing.T) {
 
 	t.Run("Error_unknown_column_in_SELECT", func(t *testing.T) {
 		res := eng.Query(ctx, "SELECT nonexistent FROM users WHERE user_id = 'user-001'")
-		requireError(t, res, "unknown col SELECT", "not found in schema")
+		requireError(t, res, "unknown col SELECT", `column "nonexistent" not found in view "users"`)
 	})
 
 	t.Run("Error_unknown_column_in_WHERE", func(t *testing.T) {
 		res := eng.Query(ctx, "SELECT * FROM users WHERE bogus = 'x'")
-		requireError(t, res, "unknown col WHERE", "not found in schema")
+		requireError(t, res, "unknown col WHERE", `column "bogus" not found in view "users"`)
 	})
 
 	t.Run("Error_unknown_view", func(t *testing.T) {
 		res := eng.Query(ctx, "SELECT * FROM nonexistent_view WHERE id = 'x'")
-		requireError(t, res, "unknown view", "not found")
+		requireError(t, res, "unknown view", `view "nonexistent_view" not found`)
 	})
 
 	t.Run("Error_malformed_SQL", func(t *testing.T) {
-		res := eng.Query(ctx, "SELECT invalid SQL")
+		res := eng.Query(ctx, "SELECT * FROM users WHERE")
 		requireError(t, res, "malformed SQL", "parse error")
 	})
 
@@ -703,5 +710,69 @@ func pollForCount(t *testing.T, ctx context.Context, eng *natsql.Engine, view st
 			t.Fatalf("timed out waiting for %d rows in %s, got %d (error: %v)", want, view, got, res.Error)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestNewEmbedded_DefaultStoreIsPrivate verifies that embedded engines
+// without a store_dir don't share JetStream state (OP-01).
+func TestNewEmbedded_DefaultStoreIsPrivate(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	ctx := context.Background()
+	quiet := natsql.WithLogger(slog.New(slog.DiscardHandler))
+
+	first, err := natsql.NewEmbedded(&natsql.Config{}, natsql.WithQueryPort(0), quiet)
+	if err != nil {
+		t.Fatalf("NewEmbedded failed: %v", err)
+	}
+	js, err := jetstream.New(first.NC())
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "PRIVATE", Subjects: []string{"private.>"}}); err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+	_ = first.Close() // never started: reports ErrNotStarted, still releases the server
+
+	second, err := natsql.NewEmbedded(&natsql.Config{}, natsql.WithQueryPort(0), quiet)
+	if err != nil {
+		t.Fatalf("NewEmbedded failed: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+	js2, err := jetstream.New(second.NC())
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	if _, err := js2.Stream(ctx, "PRIVATE"); !errors.Is(err, jetstream.ErrStreamNotFound) {
+		t.Errorf("a fresh default embedded engine sees the previous engine's stream: %v", err)
+	}
+}
+
+// TestEngineClose_Concurrent verifies that concurrent Close calls release
+// owned resources once without racing (LC-06).
+func TestEngineClose_Concurrent(t *testing.T) {
+	eng, err := natsql.NewEmbedded(&natsql.Config{NATS: natsql.NATSConfig{StoreDir: t.TempDir()}},
+		natsql.WithQueryPort(0), natsql.WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatalf("NewEmbedded failed: %v", err)
+	}
+	if err := eng.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var succeeded atomic.Int32
+	gate := make(chan struct{})
+	for range 8 {
+		wg.Go(func() {
+			<-gate
+			if eng.Close() == nil {
+				succeeded.Add(1)
+			}
+		})
+	}
+	close(gate)
+	wg.Wait()
+	if got := succeeded.Load(); got != 1 {
+		t.Errorf("%d Close calls succeeded, want exactly 1", got)
 	}
 }
