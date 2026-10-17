@@ -424,3 +424,53 @@ func TestValidate_ConsistentKeyFieldsAndPrimaryKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestValidate_KeySeparator verifies that separators which kv.BuildPKKey can't
+// join unambiguously, or that NATS can't store, are rejected (WR-04).
+func TestValidate_KeySeparator(t *testing.T) {
+	tests := []struct {
+		sep   string
+		valid bool
+	}{
+		{"", true}, // default "/"
+		{"/", true},
+		{"-", true},
+		{".", true},
+		{"=", true},
+		{"--", true},
+		{"-.-", true},
+		{"x", true},
+		{"_", false},   // the PK escape character
+		{"a_b", false}, // contains the escape character
+		{"..", false},  // empty subject token
+		{"-..-", false},
+		{"|", false}, // not a NATS KV key character
+		{":", false},
+		{" ", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sep, func(t *testing.T) {
+			cfg := &Config{
+				Views: []ViewConfig{
+					{
+						Name:         "v",
+						SourceStream: "s",
+						KeyFields:    []string{"a", "b"},
+						KeySeparator: tc.sep,
+						Columns: []ColumnConfig{
+							{Name: "a", From: "a", Type: ColumnTypeString, PrimaryKey: true},
+							{Name: "b", From: "b", Type: ColumnTypeString, PrimaryKey: true},
+						},
+					},
+				},
+			}
+			err := cfg.Validate()
+			if tc.valid && err != nil {
+				t.Errorf("separator %q rejected: %v", tc.sep, err)
+			}
+			if !tc.valid && err == nil {
+				t.Errorf("separator %q accepted, want validation error", tc.sep)
+			}
+		})
+	}
+}

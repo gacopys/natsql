@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -157,7 +158,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -227,7 +228,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -309,7 +310,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 
 	matCtx, matCancel := context.WithCancel(context.Background())
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -363,7 +364,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -457,7 +458,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -538,7 +539,7 @@ func TestMaterializerDrain(t *testing.T) {
 		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	drainCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
@@ -628,7 +629,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -711,7 +712,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -861,10 +862,17 @@ func TestClassifyWriteError_Transient(t *testing.T) {
 	}{
 		{"deadline exceeded", context.DeadlineExceeded},
 		{"context canceled", context.Canceled},
-		{"connection refused", errors.New("connection refused")},
-		{"no leader", errors.New("no leader for topic")},
-		{"timeout", errors.New("nats: timeout")},
-		{"connection closed", errors.New("connection closed unexpectedly")},
+		{"nats timeout", nats.ErrTimeout},
+		{"no responders", nats.ErrNoResponders},
+		{"disconnected", nats.ErrDisconnected},
+		{"reconnect buffer exceeded", nats.ErrReconnectBufExceeded},
+		{"connection closed", nats.ErrConnectionClosed},
+		{"no stream response", jetstream.ErrNoStreamResponse},
+		{"lost CAS races", fmt.Errorf("writing row: %w", jetstream.ErrKeyExists)},
+		{"cluster unavailable", &jetstream.APIError{ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}},
+		{"insufficient resources", &jetstream.APIError{ErrorCode: 10023, Description: "insufficient resources"}},
+		{"unrecognized error", errors.New("something went wrong")},
+		{"wrapped", fmt.Errorf("putting row at %q: %w", "v/pk/a", jetstream.ErrNoStreamResponse)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -880,12 +888,13 @@ func TestClassifyWriteError_Terminal(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"nil error", nil},
-		{"key too long", errors.New("key too long")},
-		{"value too large", errors.New("value exceeds max size")},
-		{"bad data", errors.New("invalid message data")},
-		{"generic error", errors.New("something went wrong")},
-		{"empty string", errors.New("")},
+		{"invalid key", jetstream.ErrInvalidKey},
+		// The message contains "timeout", which must not make it transient.
+		{"invalid key with keyword in PK", fmt.Errorf("creating row at %q: %w", "v/pk/timeout connection closed", jetstream.ErrInvalidKey)},
+		{"max payload", fmt.Errorf("updating row: %w", nats.ErrMaxPayload)},
+		{"message too large", fmt.Errorf("updating row: %w", &jetstream.APIError{ErrorCode: jsErrCodeMessageTooLarge})},
+		{"unencodable row", fmt.Errorf("%w: %w", errEncodeRow, errors.New("json: unsupported value"))},
+		{"nil mutation", errNilMutation},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -896,10 +905,28 @@ func TestClassifyWriteError_Terminal(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_TransientWriteError_NAKs(t *testing.T) {
-	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+func TestRedeliveryDelay(t *testing.T) {
+	tests := []struct {
+		numDelivered uint64
+		want         time.Duration
+	}{
+		{0, 250 * time.Millisecond},
+		{1, 250 * time.Millisecond},
+		{2, 500 * time.Millisecond},
+		{3, time.Second},
+		{7, 16 * time.Second},
+		{8, 30 * time.Second},
+		{100, 30 * time.Second},
+	}
+	for _, tc := range tests {
+		if got := redeliveryDelay(tc.numDelivered); got != tc.want {
+			t.Errorf("redeliveryDelay(%d) = %v, want %v", tc.numDelivered, got, tc.want)
+		}
+	}
+}
 
+func newProcessEventMapper(t *testing.T) *Mapper {
+	t.Helper()
 	mapper, err := NewMapper(&natsql.ViewConfig{
 		Name:      "test",
 		KeyFields: []string{"id"},
@@ -910,17 +937,26 @@ func TestProcessEvent_TransientWriteError_NAKs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMapper failed: %v", err)
 	}
+	return mapper
+}
+
+func TestProcessEvent_TransientWriteError_NAKsWithBackoff(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{}
-	kvMock := &fakeKV{putErr: errors.New("connection refused")}
-	writer := NewWriter(kvMock, "test_view", "|")
-	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
+	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
+	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	msg := &fakeMsg{seq: 1, numDelivered: 2, data: []byte(`{"id": "1"}`)}
 	viewCfg := &natsql.ViewConfig{Name: "test_view"}
 
-	processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
+	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
 
 	if !msg.nakked {
-		t.Error("expected msg.Nak() to be called for transient write error")
+		t.Error("expected the event to be NAK'd for a transient write error")
+	}
+	if msg.nakDelay != 500*time.Millisecond {
+		t.Errorf("NAK delay = %v, want 500ms for the second delivery", msg.nakDelay)
 	}
 	if msg.acked {
 		t.Error("expected msg.Ack() NOT to be called for transient write error")
@@ -930,28 +966,43 @@ func TestProcessEvent_TransientWriteError_NAKs(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
+// TestProcessEvent_TransientWriteError_FinalDeliveryDLQ verifies that the
+// last delivery attempt is dead-lettered instead of NAK'd, since JetStream
+// would not redeliver it.
+func TestProcessEvent_TransientWriteError_FinalDeliveryDLQ(t *testing.T) {
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	mapper, err := NewMapper(&natsql.ViewConfig{
-		Name:      "test",
-		KeyFields: []string{"id"},
-		Columns: []natsql.ColumnConfig{
-			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewMapper failed: %v", err)
-	}
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{}
-	kvMock := &fakeKV{putErr: errors.New("key too long")}
-	writer := NewWriter(kvMock, "test_view", "|")
-	msg := &fakeMsg{seq: 1, data: []byte(`{"id": "1"}`)}
+	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
+	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	msg := &fakeMsg{seq: 1, numDelivered: 3, data: []byte(`{"id": "1"}`)}
+	viewCfg := &natsql.ViewConfig{Name: "test_view", Consumer: natsql.ConsumerConfig{MaxDeliver: 3}}
+
+	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+
+	if !js.publishCalled {
+		t.Error("expected DLQ publish on the final delivery attempt")
+	}
+	if !msg.acked {
+		t.Error("expected msg.Ack() after DLQ publish")
+	}
+	if msg.nakked {
+		t.Error("expected no NAK on the final delivery attempt")
+	}
+}
+
+func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.DiscardHandler)
+
+	js := &fakeJS{}
+	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
+	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	msg := &fakeMsg{seq: 1, numDelivered: 1, data: []byte(`{"id": "1"}`)}
 	viewCfg := &natsql.ViewConfig{Name: "test_view"}
 
-	processEvent(ctx, js, mapper, writer, msg, viewCfg, logger)
+	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
 
 	if !js.publishCalled {
 		t.Error("expected DLQ publish for terminal write error")
@@ -961,6 +1012,26 @@ func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
 	}
 	if msg.nakked {
 		t.Error("expected msg.Nak() NOT to be called for terminal write error (DLQ success)")
+	}
+}
+
+func TestProcessEvent_DLQPublishFailure_NAKsWithBackoff(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.DiscardHandler)
+
+	js := &fakeJS{publishErr: nats.ErrNoResponders}
+	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
+	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	msg := &fakeMsg{seq: 1, numDelivered: 1, data: []byte(`{"id": "1"}`)}
+	viewCfg := &natsql.ViewConfig{Name: "test_view"}
+
+	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+
+	if msg.acked {
+		t.Error("expected no ack when the DLQ publish failed")
+	}
+	if !msg.nakked || msg.nakDelay != 250*time.Millisecond {
+		t.Errorf("expected NAK with 250ms backoff, got nakked=%v delay=%v", msg.nakked, msg.nakDelay)
 	}
 }
 
@@ -978,42 +1049,55 @@ func (f *fakeJS) Publish(_ context.Context, _ string, _ []byte, _ ...jetstream.P
 	return &jetstream.PubAck{}, f.publishErr
 }
 
-// fakeKV mocks jetstream.KeyValue for Writer error injection.
+// fakeKV mocks jetstream.KeyValue for Writer error injection: every key is
+// absent, and every write fails with writeErr.
 type fakeKV struct {
 	jetstream.KeyValue
-	putErr    error
-	putCalled bool
+	writeErr error
 }
 
-func (f *fakeKV) Put(_ context.Context, _ string, _ []byte) (uint64, error) {
-	f.putCalled = true
-	return 0, f.putErr
+func (f *fakeKV) Get(_ context.Context, _ string) (jetstream.KeyValueEntry, error) {
+	return nil, jetstream.ErrKeyNotFound
+}
+
+func (f *fakeKV) Create(_ context.Context, _ string, _ []byte, _ ...jetstream.KVCreateOpt) (uint64, error) {
+	return 0, f.writeErr
+}
+
+func (f *fakeKV) Update(_ context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+	return 0, f.writeErr
 }
 
 func (f *fakeKV) Bucket() string { return "test-bucket" }
 
 // fakeMsg mocks jetstream.Msg for Ack/Nak tracking.
 type fakeMsg struct {
-	data   []byte
-	seq    uint64
-	acked  bool
-	nakked bool
+	data         []byte
+	seq          uint64
+	numDelivered uint64
+	acked        bool
+	nakked       bool
+	nakDelay     time.Duration
 }
 
 func (m *fakeMsg) Data() []byte { return m.data }
 func (m *fakeMsg) Ack() error   { m.acked = true; return nil }
 func (m *fakeMsg) Nak() error   { m.nakked = true; return nil }
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}}, nil
+	return &jetstream.MsgMetadata{Sequence: jetstream.SequencePair{Stream: m.seq}, NumDelivered: m.numDelivered}, nil
 }
-func (m *fakeMsg) Headers() nats.Header               { return nil }
-func (m *fakeMsg) Subject() string                    { return "" }
-func (m *fakeMsg) Reply() string                      { return "" }
-func (m *fakeMsg) DoubleAck(_ context.Context) error  { return nil }
-func (m *fakeMsg) NakWithDelay(_ time.Duration) error { return nil }
-func (m *fakeMsg) InProgress() error                  { return nil }
-func (m *fakeMsg) Term() error                        { return nil }
-func (m *fakeMsg) TermWithReason(_ string) error      { return nil }
+func (m *fakeMsg) Headers() nats.Header              { return nil }
+func (m *fakeMsg) Subject() string                   { return "" }
+func (m *fakeMsg) Reply() string                     { return "" }
+func (m *fakeMsg) DoubleAck(_ context.Context) error { return nil }
+func (m *fakeMsg) NakWithDelay(d time.Duration) error {
+	m.nakked = true
+	m.nakDelay = d
+	return nil
+}
+func (m *fakeMsg) InProgress() error             { return nil }
+func (m *fakeMsg) Term() error                   { return nil }
+func (m *fakeMsg) TermWithReason(_ string) error { return nil }
 
 func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal string) {
 	t.Helper()
@@ -1042,5 +1126,207 @@ func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal str
 	}
 	if string(origBytes) != wantOriginal {
 		t.Errorf("original_message_b64 decoded to %q, want %q", string(origBytes), wantOriginal)
+	}
+}
+
+// waitFor polls cond every 20ms until it returns true or timeout passes.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %v waiting for %s", timeout, what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// failingWritesKV fails row writes while shouldFail returns true for the key.
+type failingWritesKV struct {
+	jetstream.KeyValue
+	shouldFail func(key string) bool
+	failures   atomic.Int32
+}
+
+func (f *failingWritesKV) fail(key string) bool {
+	if strings.Contains(key, "/pk/") && f.shouldFail(key) {
+		f.failures.Add(1)
+		return true
+	}
+	return false
+}
+
+func (f *failingWritesKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	if f.fail(key) {
+		return 0, nats.ErrNoResponders
+	}
+	return f.KeyValue.Create(ctx, key, value, opts...)
+}
+
+func (f *failingWritesKV) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	if f.fail(key) {
+		return 0, nats.ErrNoResponders
+	}
+	return f.KeyValue.Update(ctx, key, value, revision)
+}
+
+func runMaterializer(t *testing.T, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, js, viewCfg, bucket, slog.New(slog.DiscardHandler), nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+func consumerSettled(ctx context.Context, js jetstream.JetStream, stream, consumer string, wantDelivered uint64) func() bool {
+	return func() bool {
+		cons, err := js.Consumer(ctx, stream, consumer)
+		if err != nil {
+			return false
+		}
+		info, err := cons.Info(ctx)
+		if err != nil {
+			return false
+		}
+		return info.AckFloor.Stream >= wantDelivered && info.NumAckPending == 0 && info.NumPending == 0
+	}
+}
+
+// TestMaterializer_RedeliveredOlderEventDoesNotOverwrite reproduces the
+// redelivery race end to end: the first write for a key fails transiently,
+// the newer event for the same key is applied, and the older event is
+// redelivered afterwards. The newer value must survive (WR-01).
+func TestMaterializer_RedeliveredOlderEventDoesNotOverwrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	streamName := "TEST_MAT_REDELIVERY"
+	createStream(t, ctx, js, streamName)
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+	if _, err := EnsureDLQStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDLQStream failed: %v", err)
+	}
+
+	for _, body := range []string{`{"id":"a","value":1}`, `{"id":"a","value":2}`} {
+		if _, err := js.Publish(ctx, streamName+".e", []byte(body)); err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
+	}
+
+	var failedOnce atomic.Bool
+	bucket := &failingWritesKV{KeyValue: kvb, shouldFail: func(string) bool { return failedOnce.CompareAndSwap(false, true) }}
+	viewCfg := &natsql.ViewConfig{
+		Name:         "review",
+		SourceStream: streamName,
+		KeyFields:    []string{"id"},
+		Columns: []natsql.ColumnConfig{
+			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
+			{Name: "value", From: "value", Type: natsql.ColumnTypeNumber},
+		},
+	}
+	runMaterializer(t, js, viewCfg, bucket)
+
+	waitFor(t, 20*time.Second, "both events to be acked", consumerSettled(ctx, js, streamName, ConsumerName("review"), 2))
+	if bucket.failures.Load() != 1 {
+		t.Fatalf("injected %d write failures, want 1", bucket.failures.Load())
+	}
+
+	entry, err := kvb.Get(ctx, kv.BuildPKKey("review", []string{"a"}, "/"))
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(entry.Value(), &row); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if row["value"] != float64(2) {
+		t.Errorf("value = %v, want 2: the redelivered older event overwrote newer state", row["value"])
+	}
+}
+
+// TestMaterializer_OutageDeadLettersOnFinalDelivery verifies that an event
+// whose writes keep failing transiently is retried with backoff and then
+// dead-lettered on its final delivery, instead of vanishing when MaxDeliver
+// is reached (WR-02).
+func TestMaterializer_OutageDeadLettersOnFinalDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	streamName := "TEST_MAT_OUTAGE"
+	createStream(t, ctx, js, streamName)
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+	dlq, err := EnsureDLQStream(ctx, js)
+	if err != nil {
+		t.Fatalf("EnsureDLQStream failed: %v", err)
+	}
+
+	lostKey := kv.BuildPKKey("review", []string{"lost"}, "/")
+	bucket := &failingWritesKV{KeyValue: kvb, shouldFail: func(key string) bool { return key == lostKey }}
+	viewCfg := &natsql.ViewConfig{
+		Name:         "review",
+		SourceStream: streamName,
+		KeyFields:    []string{"id"},
+		Columns:      []natsql.ColumnConfig{{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+		Consumer:     natsql.ConsumerConfig{MaxDeliver: 3},
+	}
+	runMaterializer(t, js, viewCfg, bucket)
+
+	for _, body := range []string{`{"id":"lost"}`, `{"id":"healthy"}`} {
+		if _, err := js.Publish(ctx, streamName+".e", []byte(body)); err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
+	}
+
+	waitFor(t, 20*time.Second, "the failing event to reach the DLQ", func() bool {
+		info, err := dlq.Info(ctx)
+		return err == nil && info.State.Msgs == 1
+	})
+	if got := bucket.failures.Load(); got != 3 {
+		t.Errorf("write attempts for the failing event = %d, want 3 (MaxDeliver)", got)
+	}
+	if _, err := kvb.Get(ctx, kv.BuildPKKey("review", []string{"healthy"}, "/")); err != nil {
+		t.Errorf("healthy event was not materialized: %v", err)
+	}
+	waitFor(t, 5*time.Second, "both events to be acked", consumerSettled(ctx, js, streamName, ConsumerName("review"), 2))
+}
+
+// TestEnsureDLQStream_PreservesExistingConfig verifies that restarting never
+// resets an operator-tuned DLQ stream (e.g. a longer retention).
+func TestEnsureDLQStream_PreservesExistingConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     DLQStreamName,
+		Subjects: []string{DLQSubject},
+		MaxAge:   30 * 24 * time.Hour,
+	}); err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	stream, err := EnsureDLQStream(ctx, js)
+	if err != nil {
+		t.Fatalf("EnsureDLQStream failed: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info failed: %v", err)
+	}
+	if info.Config.MaxAge != 30*24*time.Hour {
+		t.Errorf("DLQ MaxAge = %v, want 720h (operator config was overwritten)", info.Config.MaxAge)
 	}
 }

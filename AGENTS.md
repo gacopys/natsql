@@ -151,7 +151,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 > Full source: [`CONVENTIONS.md`](CONVENTIONS.md). The summary below is regenerated from it.
 
 ### Toolchain
-- Go 1.22+ (toolchain `go 1.26.4`); module `github.com/gacopys/natsql`. Import order enforced by `gci`: stdlib / third-party / `github.com/gacopys/natsql`. No new top-level deps without justification.
+- Go 1.22+ (`go 1.26.5` minimum, `toolchain go1.27.2` for builds/CI); module `github.com/gacopys/natsql`. Import order enforced by `gci`: stdlib / third-party / `github.com/gacopys/natsql`. No new top-level deps without justification.
 
 ### Package layout (root facade + `internal/`)
 - `natsql/` public API (`New`, `NewWithNATS`, `NewEmbedded`, `Query`, `Close`) + `config.go` type aliases that break the import cycle; `internal/` packages never import the root; `cfg` holds config *types*; `engine` imports `cfg` (not the root).
@@ -164,7 +164,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 - Wrap with `%w`: `fmt.Errorf("…: %w", err)`. Never swallow — assign `_` with a one-line why-comment. `Query` returns `*QueryResult` with `Error *string` (never a Go error). Constructors return `(T, error)`. Classify at the caller (`materializer.classifyWriteError`), not inside `Writer.Apply`.
 
 ### Logging
-- `log/slog` only, structured k/v pairs. Pass `*slog.Logger` down; default `slog.Default()`. Tests discard output: `slog.New(slog.NewTextHandler(io.Discard, nil))`.
+- `log/slog` only, structured k/v pairs. Pass `*slog.Logger` down; default `slog.Default()`. Tests discard output: `slog.New(slog.DiscardHandler)`.
 
 ### Constructors & options
 - `New…` names; variadic `Option func(*Engine)`; `WithLogger`/`WithHTTPServer`/`WithQueryPort`. `SetDefaults()`+`Validate()` run automatically in the facade. `Validate()` collects *all* errors and returns one joined message. Ownership is documented (`NewWithNATS` owns `nc.Close()`, `New` does not); `Close()` is idempotent.
@@ -208,17 +208,18 @@ JetStream stream → Materializer (consumer→mapper→writer) → KV bucket →
 ```
 
 ### Components
-- **Materializer** (`internal/materialize/`): durable pull consumer, `Mapper` (JSON path → typed `RowMutation`), `Writer.Apply` (`kv.Put` via `BuildPkKey`), DLQ routing, heartbeat, drain-on-shutdown.
+- **Materializer** (`internal/materialize/`): durable pull consumer, `Mapper` (JSON path → typed `RowMutation`), `Writer.Apply` (sequence-guarded CAS `Create`/`Update` via `BuildPKKey`), DLQ routing, heartbeat, drain-on-shutdown.
 - **Query Engine** (`internal/query/`): `Parse` (vitess) → `Validate` (against schema) → `BuildPlan` (`PKLookup`/`FullScan`/`Empty`) → `plan.Execute` (type-aware `valuesEqual`, `json.Number` precision, column projection).
 - **Transport** (`internal/transport/`): `POST /api/v1/query` (chi, 1 MiB cap, reject trailing bytes), `natsql.query` subscription (raw SQL body). Identical `QueryResult{Results,Error}` envelope.
 
 ### Storage
 - One KV bucket `natsql-views` (`kv.DefaultBucket`); one DLQ stream `natsql-dlq`.
-- Keys: `{view}/pk/{sanitizedPk}` → row JSON (schema cols + `_meta{stream_seq,updated_at}`); `{view}/meta/schema` → `ViewSchema`.
-- **Canonical PK encoding (CR-02):** `kv.BuildPkKey(view, pkParts, sep)` is the SINGLE encoder. Sanitizes once (`_→__`,`|→_p`,`/→_s`,`*→_a`,`>→_g`); separator is validated but not sanitized. Mapper returns RAW pkParts; writer/executor both call `BuildPkKey`. Re-adding sanitization in the mapper breaks read/write consistency.
+- Keys: `{view}/pk/{encodedPk}` → row JSON (schema cols + `_meta{stream_seq,stream,stream_created,updated_at}`); `{view}/meta/schema` → `ViewSchema`.
+- **Canonical PK encoding (CR-02):** `kv.BuildPKKey(view, pkParts, sep)` is the SINGLE encoder. Escapes once (`_→__`,`|→_p`,`/→_s`,`*→_a`,`>→_g`, other non-key bytes and separator chars in composite keys → `_xHH`, a trailing or doubled `.` → `_x2e`, empty component with a `.` separator → `_e`); output is always a valid, injective KV key. Separator is validated (no `_`, no `..`) but not escaped. Mapper returns RAW pkParts; writer/executor both call `BuildPKKey`. Re-adding sanitization in the mapper breaks read/write consistency.
+- Existing bucket/DLQ stream are opened, never reconfigured; created only if missing (`kv.InitBucket`, `EnsureDLQStream`). The read path uses `kv.OpenBucket` (no create/update).
 
 ### Write path
-Single goroutine per view, **sequential** (no worker pool — preserves stream/PK ordering). Error policy: malformed → DLQ+Ack; transient (deadline/timeout/conn-refused/no-leader/closed) → NAK; terminal → DLQ+Ack; `ctx.Err()` → NAK. Drain channels closed before `cancel()` (D-58).
+Single goroutine per view, **sequential** (no worker pool — preserves stream/PK ordering). Writes skip events older than the stored row's `stream_seq` (same source incarnation) and use CAS (WR-01). Error policy: malformed → DLQ+Ack; terminal (invalid key, unencodable/oversized row — matched by `errors.Is`/API code) → DLQ+Ack; everything else is transient → `NakWithDelay` backoff, DLQ+Ack on the final delivery; `ctx.Err()` → NAK. Drain channels closed before `cancel()` (D-58).
 
 ### Read path
 `Query` lazy-inits KV (mutex) → `Parse` → `LoadSchema` (fresh, D-27) → `Validate` → `BuildPlan` → `Execute`. ALL `Where` conditions kept as post-filters incl. PK equalities (CR-03). Contradictory PK equalities (`id='a' AND id='b'`) → `EmptyPlan` (zero I/O). `json.Decoder.UseNumber` everywhere (CR-09 — >2^53 precision). `SELECT *` strips `_`-prefixed keys (`_meta`); explicit projection → nil for missing columns (D-31). `nil` results → `[]` (D-33).
@@ -230,7 +231,7 @@ Single goroutine per view, **sequential** (no worker pool — preserves stream/P
 `Start()`: `InitBucket` → `EnsureDLQStream` → store schemas (warn on fail) → materializers with 500ms startup-error window (fail-fast) → NATS handler (fatal) → **`net.Listen` before `Serve`** (synchronous bind). `ErrAlreadyStarted` if called twice.
 
 ### Critical invariants (preserve when refactoring)
-1. Sanitize PK exactly once (`BuildPkKey`). 2. `json.Number` precision in both mapper + executor. 3. `SELECT *` strips `_`-prefixed keys. 4. All `Where` conditions post-filter (incl PK). 5. Contradictory PK → `EmptyPlan`. 6. Sequential write path (no worker pool). 7. Drain before cancel. 8. No `InactiveThreshold` on durable consumers (CR-11). 9. CLI only auto-creates streams in embedded mode, respects `source_subject` (CR-14). 10. HTTP: `MaxBytesReader` + `errors.As(*http.MaxBytesError)` + reject trailing bytes + 127.0.0.1 bind (T-02-06). 11. NATS handler checks `nc.Flush()` (CR-19). 12. Schema loaded fresh per query (D-27). 13. Path depth capped at 8 (T-02-02). 14. `$.` path prefix stripped. 15. `Query` thread-safe before `Start()` (lazy KV under mutex). Full list + edge cases in ARCHITECTURE.md §8.
+1. Sanitize PK exactly once (`BuildPkKey`). 2. `json.Number` precision in both mapper + executor. 3. `SELECT *` strips `_`-prefixed keys. 4. All `Where` conditions post-filter (incl PK). 5. Contradictory PK → `EmptyPlan`. 6. Sequential write path (no worker pool). 7. Drain before cancel. 8. No `InactiveThreshold` on durable consumers (CR-11). 9. CLI only auto-creates streams in embedded mode, respects `source_subject` (CR-14). 10. HTTP: `MaxBytesReader` + `errors.As(*http.MaxBytesError)` + reject trailing bytes + 127.0.0.1 bind (T-02-06). 11. NATS handler checks `nc.Flush()` (CR-19). 12. Schema loaded fresh per query (D-27). 13. Path depth capped at 8 (T-02-02). 14. `$.` path prefix stripped. 15. `Query` thread-safe before `Start()` (lazy `OpenBucket` under mutex; never creates/updates the bucket). 16. Sequence-guarded CAS writes (never blind `Put`). Full list + edge cases in ARCHITECTURE.md §8.
 
 ### Extension points
 - New column type: `ColumnType` + `Valid()` + `mapper.validateType` + `valuesEqual` (`exhaustive` guards switches).

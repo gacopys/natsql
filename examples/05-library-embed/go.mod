@@ -2,6 +2,8 @@ module example-library
 
 go 1.26.5
 
+toolchain go1.27.2
+
 require (
 	github.com/gacopys/natsql v1.0.0
 	github.com/nats-io/nats-server/v2 v2.14.3

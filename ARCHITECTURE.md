@@ -43,20 +43,22 @@ JetStream stream
         - validateType per ColumnType (string/number/boolean/timestamp)
         - stringifyValue → raw PK parts (NOT sanitized here)
       writer.Apply(mut)
-        - row = rowData + _meta{stream_seq, updated_at(RFC3339Nano)}
-        - kv.BuildPkKey(view, pkParts, sep)  ← SINGLE canonical encoder
-        - kv.Put(key, rowJSON)
+        - row = rowData + _meta{stream_seq, stream, stream_created, updated_at(RFC3339Nano)}
+        - kv.BuildPKKey(view, pkParts, sep)  ← SINGLE canonical encoder
+        - kv.Get(key) → if stored row is from the same source stream incarnation
+          with stream_seq >= this event's: skip (already applied / stale redelivery)
+        - else kv.Create (absent) or kv.Update(key, rowJSON, revision) — CAS; re-read on conflict
       on success: msg.Ack()
       on map error (ErrMalformedEvent): publishToDLQ + Ack
       on write error - classify:
-        - transient (deadline/cancel/context-closed/conn-refused/no-leader/timeout):
-            msg.Nak() → redelivery
-        - terminal: publishToDLQ + Ack
+        - terminal (invalid key, unencodable row, row too large): publishToDLQ + Ack
+        - transient (everything else): msg.NakWithDelay(250ms doubling, max 30s);
+            on the final delivery (NumDelivered >= MaxDeliver): publishToDLQ + Ack
   → heartbeat every 60s (events_processed counter)
   → drain on Close(): cons.Drain() before ctx cancel (D-58 — prevents redelivery)
 ```
 
-**Invariant: events for one PK are applied in stream order.** This is why there is no worker pool. If throughput needs to scale, partition the source stream by subject and run one sequential consumer per partition — not parallel consumers on the same subject.
+**Invariant: a row never moves backwards in stream order.** JetStream can redeliver an older event after a newer one (NAK, lost ack, AckWait expiry), so processing order alone doesn't guarantee this; the writer's sequence check plus CAS write does (WR-01). Sequences are only compared within one source stream incarnation (`_meta.stream` + `_meta.stream_created`), because they restart when a stream is recreated; rows from another incarnation, or written before `_meta` recorded it, are overwritten. Sequential processing per view is still required: there is no worker pool. If throughput needs to scale, partition the source stream by subject and run one sequential consumer per partition — not parallel consumers on the same subject.
 
 ### 2.2 Read Path (SQL → results)
 
@@ -101,7 +103,7 @@ All state lives in a **single** JetStream KV bucket, `natsql-views` (`kv.Default
 ```
 
 - `viewName` is the configured view name (validated to be a NATS-KV-safe identifier).
-- Row values are `{"<col>": <typed>, …, "_meta": {"stream_seq":N, "updated_at":"…"}}`.
+- Row values are `{"<col>": <typed>, …, "_meta": {"stream_seq":N, "stream":"…", "stream_created":"…", "updated_at":"…"}}`.
 - `SELECT *` excludes keys prefixed with `_` (so `_meta` is internal). Explicit column projection yields those columns only; missing columns → `nil` (D-31).
 
 ### 3.2 Canonical PK Encoding (CR-02 — critical invariant)
@@ -109,16 +111,23 @@ All state lives in a **single** JetStream KV bucket, `natsql-views` (`kv.Default
 `kv.BuildPkKey(viewName, pkParts []string, separator string)` is the **single** place that constructs a row key. Both the writer and the query executor MUST call it. Sanitization happens exactly once, inside it.
 
 ```
-BuildPkKey:
-  for each part: SanitizePK(part)     // _ → __, | → _p, / → _s, * → _a, > → _g
-  join sanitized parts with separator // separator is NOT sanitized (validated to KV-safe chars)
+BuildPKKey:
+  for each part, byte by byte:
+    _ → __, | → _p, / → _s, * → _a, > → _g          // original escapes
+    composite key and byte occurs in separator → _xHH
+    '.' that ends the key or precedes another '.' → _x2e  // NATS rejects/drops these
+    other byte outside [A-Za-z0-9-=.] → _xHH          // '@', ' ', ':', '+', UTF-8 …
+  composite key, separator contains '.', empty part → _e
+  join encoded parts with separator   // separator is NOT escaped (validated)
   return viewName + "/pk/" + join
 ```
+
+Every output is a valid NATS KV key, and the encoding is injective for a fixed number of components (`TestBuildPKKey_ValidAndInjective` checks this exhaustively over an adversarial alphabet, and `TestBuildPKKey_RoundTripThroughNATS` against a real server). Single-component keys and default-separator keys that were valid under the original five escapes encode exactly as before (WR-03, WR-04).
 
 - `RowMutation.PkParts` carries **raw** (unsanitized) PK component values. The mapper does NOT call `SanitizePK`. The writer does, via `BuildPkKey`.
 - The planner produces raw PK parts in `KeyFields` order using `fmt.Sprint(value)`, matching the mapper's `stringifyValue` representation. The executor calls `BuildPkKey` with those raw parts + the schema's separator.
 - **Re-introducing double sanitization, or sanitizing in the mapper, breaks read/write consistency** — rows with `_`, `|`, `/`, `*`, `>` in PKs become unreachable from query. Tests in `kv_test.go` and `natsql_blackbox_test.go` guard this.
-- Default separator is `/` (a KV-safe char). `SanitizePK` escapes `/` in PK values to `_s`, so composite keys cannot collide with separator slashes. Custom separators are validated against `^[-/_=.a-zA-Z0-9]+$`.
+- Default separator is `/`. Custom separators may use letters, digits and `- / . =`; `_` (the escape character) and `..` (an empty subject token) are rejected by `Validate`.
 
 ### 3.3 Schema in KV
 
@@ -173,12 +182,14 @@ Rows are decoded with `json.Decoder.UseNumber()`, so numbers surface as `json.Nu
 
 | Class | Signals | Action |
 |---|---|---|
-| Transient | `context.Canceled`/`DeadlineExceeded`, `connection refused`/`closed`/`no leader`/`timeout` | `msg.Nak()` — let JetStream redeliver |
-| Terminal | everything else (bad data path, key validation, marshal) | `publishToDLQ` + `msg.Ack()` |
+| Terminal | `jetstream.ErrInvalidKey`, `nats.ErrMaxPayload`, JetStream API error 10054 (message too large), `errEncodeRow`, `errNilMutation` | `publishToDLQ` + `msg.Ack()` |
+| Transient | everything else, including unrecognized errors | `msg.NakWithDelay` (250ms doubling, capped at 30s); on the final delivery attempt, `publishToDLQ` + `msg.Ack()` |
 | Context canceled | `ctx.Err() != nil` | `msg.Nak()` (redeliver on restart) |
 
+- Errors are matched with `errors.Is`/`errors.As` and JetStream error codes, never by message text (the text includes the PK) (WR-02).
+- Unknown errors default to transient: misclassifying a recoverable error as terminal acks a valid event and drops its update, while the reverse only delays it until the final delivery dead-letters it.
 - `ErrMalformedEvent` (mapper): always DLQ + Ack (bad event data never improves on retry).
-- `publishToDLQ` failure: NAK the original (don't ack — allow retry of both DLQ and original).
+- `publishToDLQ` failure: NAK the original with backoff (don't ack — allow retry of both DLQ and original).
 - The DLQ envelope is `{original_message_b64, view_name, error, timestamp(RFC3339)}`.
 
 ### 5.3 Lifecycle & Shutdown (D-57 ordering)
@@ -196,8 +207,9 @@ The root facade `Engine.Close()` then additionally shuts down the embedded NATS 
 ## 6. Engine Lifecycle
 
 - `New` (caller owns JetStream + NATS conn), `NewWithNATS` (engine owns `nc.Close`), `NewEmbedded` (engine owns embedded node + conn). The facade re-exports the three and wires ownership into `Engine.Close`.
-- `Start()` is synchronous and idempotent (`ErrAlreadyStarted`): `kv.InitBucket` → `EnsureDLQStream` → store all schemas (`Warn` on failure) → launch materializers (with a 500ms startup-error window → fail-fast) → register NATS handler (failure is fatal) → bind HTTP listener (`net.Listen` before `Serve`, so bind errors propagate — CR-07).
-- `Query()` is thread-safe and works even before `Start()` (lazy-inits the KV bucket under the mutex).
+- `Start()` is synchronous and idempotent (`ErrAlreadyStarted`): `kv.InitBucket` (open, create only if missing) → `EnsureDLQStream` (same) → store all schemas (`Warn` on failure) → launch materializers (with a 500ms startup-error window → fail-fast) → register NATS handler (failure is fatal) → bind HTTP listener (`net.Listen` before `Serve`, so bind errors propagate — CR-07).
+- `Query()` is thread-safe and works even before `Start()` (lazily *opens* the KV bucket under the mutex via `kv.OpenBucket`; it never creates or reconfigures it, and parses SQL before any KV I/O).
+- Existing buckets and DLQ streams are never reconfigured: history, TTL, limits and replicas belong to whoever provisioned them (WR-05).
 - `Stats()` is safe at any lifecycle phase: returns `Started`, `Goroutines` (`runtime.NumGoroutine`), `Views` (from config), `HTTPServing`.
 
 ## 7. Configuration Surface
@@ -208,7 +220,7 @@ See `internal/cfg/config.go` and `CONVENTIONS.md` §11. Key cross-validations en
 - Every `key_fields` entry references a column that has `primary_key: true`.
 - Every `primary_key: true` column appears in `key_fields`.
 - Column names unique within a view.
-- `key_separator` matches the NATS KV key charset.
+- `key_separator` uses only letters, digits and `- / . =`, and doesn't contain `..`.
 - `Indexes` block rejected (v1) with actionable error.
 - Duplicate view names rejected.
 
@@ -232,8 +244,9 @@ These are the things that look innocent but break the engine. Preserve them when
 14. **Result normalization** — `nil` results become `[]map[string]any{}` so the JSON envelope is always `{"results":[...], "error":null}` (D-33). Don't return `nil` slices to the transport.
 15. **Field path depth** — `extractNestedField` caps at 8 levels (`maxNestingDepth`) for safety (T-02-02). A pathological event can't recurse forever.
 16. **`$.` prefix** — dot paths may start with `$.`; stripped in `extractNestedField` for backward-compatible config (`$.user.id` ≡ `user.id`).
-17. **Composite key separator safety** — default `/`; PK values with `/` are escaped to `_s` so they can't cross separator. Custom separators must be KV-safe; a separator matching a value's escaped sequence is theoretically possible for pathological inputs — keep separators simple.
-18. **`Query` thread-safety before `Start`** — relies on `kv.InitBucket` lazy-init guarded by `e.mu` (FIX-ENG-02). Don't move this out of the lock.
+17. **Composite key separator safety** — in composite keys, every character of the separator is escaped inside components, so a component can't contain the separator (WR-04). This is why `_` and `..` separators are rejected. Changing a view's `key_separator` or `key_fields` changes its keys and requires re-materializing it.
+18. **`Query` thread-safety before `Start`** — relies on `kv.OpenBucket` lazy-open guarded by `e.mu` (FIX-ENG-02). Don't move this out of the lock, and never make the read path create or update the bucket (WR-05).
+19. **Ordered, CAS-guarded writes** — `Writer.Apply` must keep comparing `_meta.stream_seq` within one source incarnation and writing with `Create`/`Update(revision)`. Reverting to `kv.Put` lets redelivered older events overwrite newer rows (WR-01).
 
 ## 9. Performance Characteristics
 

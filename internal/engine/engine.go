@@ -214,8 +214,8 @@ func NewEmbedded(cfg *natsqlpkg.Config, opts ...Option) (*Engine, error) {
 // and launches materializer goroutines for each configured view.
 //
 // Steps:
-//  1. Initialize the KV bucket (natsql-views) via kv.InitBucket
-//  2. Create or update the DLQ stream (natsql-dlq) via materialize.EnsureDLQStream
+//  1. Open the KV bucket (natsql-views), creating it if missing, via kv.InitBucket
+//  2. Open the DLQ stream (natsql-dlq), creating it if missing, via materialize.EnsureDLQStream
 //  3. Store the schema for each view in KV
 //  4. For each view, launch a goroutine running materialize.Run
 //
@@ -255,7 +255,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Info("NATS query handler registered", "subject", "natsql.query")
 	}
 
-	if err := e.startHTTPServer(); err != nil {
+	if err := e.startHTTPServer(ctx); err != nil {
 		return err
 	}
 
@@ -318,12 +318,13 @@ startupLoop:
 	return drainChans, nil
 }
 
-func (e *Engine) startHTTPServer() error {
+func (e *Engine) startHTTPServer(ctx context.Context) error {
 	router := transport.NewRouter()
 	transport.RegisterHTTPHandler(router, e)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
-	// CR-07: net.Listen before Serve so bind errors propagate synchronously.
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
+	// CR-07: Listen before Serve so bind errors propagate synchronously.
 	if err != nil {
 		return fmt.Errorf("HTTP listen failed on port %d: %w", e.queryPort, err)
 	}
@@ -412,32 +413,26 @@ func (e *Engine) Close() error {
 // builds an execution plan, and executes it.
 //
 // This method is threadsafe and works before Engine.Start() has been called
-// (it will lazy-initialize the KV bucket if needed).
+// (it lazily opens the KV bucket if another engine has created it).
 //
 // Returns a QueryResult with typed JSON values per D-29/D-30.
 func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 	e.logger.Info("executing SQL", "sql", sql)
 
-	// Ensure KV bucket is available (works before Start())
-	// Protected by mutex for thread safety (FIX-ENG-02)
-	e.mu.Lock()
-	kvb := e.kv
-	if kvb == nil {
-		var err error
-		kvb, err = kv.InitBucket(ctx, e.js, 1)
-		if err != nil {
-			e.mu.Unlock()
-			errStr := fmt.Sprintf("initializing KV bucket: %v", err)
-			return &query.QueryResult{Error: &errStr}
-		}
-		e.kv = kvb
-	}
-	e.mu.Unlock()
-
-	// Parse SQL
+	// Parse before touching storage, so invalid SQL costs no KV round trip.
 	q, err := query.Parse(sql)
 	if err != nil {
 		errStr := err.Error()
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+
+	kvb, err := e.queryBucket(ctx)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		errStr := fmt.Sprintf("view %q not found", q.From) // nothing materialized yet (D-42)
+		return &query.QueryResult{Results: nil, Error: &errStr}
+	}
+	if err != nil {
+		errStr := fmt.Sprintf("opening KV bucket: %v", err)
 		return &query.QueryResult{Results: nil, Error: &errStr}
 	}
 
@@ -477,6 +472,25 @@ func (e *Engine) Query(ctx context.Context, sql string) *query.QueryResult {
 		rows = []map[string]any{}
 	}
 	return &query.QueryResult{Results: rows, Error: nil}
+}
+
+// queryBucket returns the KV bucket for the read path, opening it on first
+// use under the mutex (FIX-ENG-02). It never creates or reconfigures the
+// bucket (WR-05): its settings belong to whoever provisioned it, and queries
+// should only need read permissions.
+func (e *Engine) queryBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.kv != nil {
+		return e.kv, nil
+	}
+	kvb, err := kv.OpenBucket(ctx, e.js)
+	if err != nil {
+		return nil, err
+	}
+	e.kv = kvb
+	return kvb, nil
 }
 
 // Stats holds operational metrics for the Engine (D-60).
