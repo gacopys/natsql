@@ -74,12 +74,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("JetStream: %w", err)
 	}
-
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "user-stream", Subjects: []string{"users.>"}}); err != nil {
-		return fmt.Errorf("CreateStream: %w", err)
-	}
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "product-stream", Subjects: []string{"products.>"}}); err != nil {
-		return fmt.Errorf("CreateStream: %w", err)
+	for stream, subject := range map[string]string{"user-stream": "users.>", "product-stream": "products.>"} {
+		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: stream, Subjects: []string{subject}}); err != nil {
+			return fmt.Errorf("CreateStream: %w", err)
+		}
 	}
 
 	if err := eng.Start(ctx); err != nil {
@@ -87,26 +85,20 @@ func run() error {
 	}
 	fmt.Print("✓ Engine started with 2 views\n\n")
 
-	// Publish user events
-	for _, u := range []string{
+	if err := publishAll(ctx, js, "users.created", []string{
 		`{"id": "u1", "name": "Alice", "role": "admin"}`,
 		`{"id": "u2", "name": "Bob", "role": "viewer"}`,
-	} {
-		if _, err := js.Publish(ctx, "users.created", []byte(u)); err != nil {
-			return fmt.Errorf("Publish user: %w", err)
-		}
+	}); err != nil {
+		return err
 	}
 	fmt.Println("  Published 2 user events")
 
-	// Publish product events
-	for _, p := range []string{
+	if err := publishAll(ctx, js, "products.created", []string{
 		`{"sku": "SKU-001", "title": "Widget", "price": 9.99, "in_stock": true}`,
 		`{"sku": "SKU-002", "title": "Gadget", "price": 24.99, "in_stock": false}`,
 		`{"sku": "SKU-003", "title": "Doohickey", "price": 49.99, "in_stock": true}`,
-	} {
-		if _, err := js.Publish(ctx, "products.created", []byte(p)); err != nil {
-			return fmt.Errorf("Publish product: %w", err)
-		}
+	}); err != nil {
+		return err
 	}
 	fmt.Print("  Published 3 product events\n\n")
 
@@ -118,55 +110,69 @@ func run() error {
 		return err
 	}
 
-	// Query users
-	fmt.Println("── Users ──")
-	rows, err := waitForRows(ctx, eng, "SELECT * FROM users WHERE user_id = 'u1'", 1)
-	if err != nil {
+	checks := []struct {
+		heading, label, sql string
+		want                map[string]string
+	}{
+		{"── Users ──", "Alice", "SELECT * FROM users WHERE user_id = 'u1'", map[string]string{"user_id": "u1", "name": "Alice", "role": "admin"}},
+		{"", "Bob (projected)", "SELECT name, role FROM users WHERE user_id = 'u2'", map[string]string{"name": "Bob", "role": "viewer"}},
+		{"── Products ──", "Gadget", "SELECT * FROM products WHERE sku = 'SKU-002'", map[string]string{"sku": "SKU-002", "title": "Gadget", "price": "24.99", "in_stock": "false"}},
+	}
+	for _, c := range checks {
+		if c.heading != "" {
+			fmt.Println(c.heading)
+		}
+		if err := checkRow(ctx, eng, c.sql, c.label, c.want); err != nil {
+			return err
+		}
+	}
+
+	if err := checkErrors(ctx, eng); err != nil {
 		return err
 	}
-	if err := expectRow(rows[0], map[string]string{"user_id": "u1", "name": "Alice", "role": "admin"}); err != nil {
-		return fmt.Errorf("Alice: %w", err)
-	}
-	pretty(rows, "Alice")
-
-	rows, err = waitForRows(ctx, eng, "SELECT name, role FROM users WHERE user_id = 'u2'", 1)
-	if err != nil {
-		return err
-	}
-	if err := expectRow(rows[0], map[string]string{"name": "Bob", "role": "viewer"}); err != nil {
-		return fmt.Errorf("Bob: %w", err)
-	}
-	if len(rows[0]) != 2 {
-		return fmt.Errorf("Bob: projection returned %d columns, want 2", len(rows[0]))
-	}
-	pretty(rows, "Bob (projected)")
-
-	// Query products
-	fmt.Println("── Products ──")
-	rows, err = waitForRows(ctx, eng, "SELECT * FROM products WHERE sku = 'SKU-002'", 1)
-	if err != nil {
-		return err
-	}
-	if err := expectRow(rows[0], map[string]string{"title": "Gadget", "price": "24.99", "in_stock": "false"}); err != nil {
-		return fmt.Errorf("Gadget: %w", err)
-	}
-	pretty(rows, "Gadget")
-
-	// Query a non-existent view — should error clearly
-	res := eng.Query(ctx, "SELECT * FROM nonexistent WHERE id = 'x'")
-	if res.Error == nil || !strings.Contains(*res.Error, `view "nonexistent" not found`) {
-		return fmt.Errorf("unknown view: got %+v, want a not-found error", res)
-	}
-	fmt.Printf("  ✓ Unknown view error: %s\n", *res.Error)
-
-	// Query a non-existent column — should error clearly
-	res = eng.Query(ctx, "SELECT fake_column FROM users WHERE user_id = 'u1'")
-	if res.Error == nil || !strings.Contains(*res.Error, `column "fake_column" not found`) {
-		return fmt.Errorf("unknown column: got %+v, want a not-found error", res)
-	}
-	fmt.Printf("  ✓ Unknown column error: %s\n", *res.Error)
 
 	fmt.Println("\n✅ Multiple views work independently in one engine!")
+	return nil
+}
+
+// checkErrors checks that unknown views and columns fail with clear errors.
+func checkErrors(ctx context.Context, eng *natsql.Engine) error {
+	for sql, wantErr := range map[string]string{
+		"SELECT * FROM nonexistent WHERE id = 'x'":           `view "nonexistent" not found`,
+		"SELECT fake_column FROM users WHERE user_id = 'u1'": `column "fake_column" not found`,
+	} {
+		res := eng.Query(ctx, sql)
+		if res.Error == nil || !strings.Contains(*res.Error, wantErr) {
+			return fmt.Errorf("%s: got %+v, want error %q", sql, res, wantErr)
+		}
+		fmt.Printf("  ✓ Error: %s\n", *res.Error)
+	}
+	return nil
+}
+
+func publishAll(ctx context.Context, js jetstream.JetStream, subject string, events []string) error {
+	for _, e := range events {
+		if _, err := js.Publish(ctx, subject, []byte(e)); err != nil {
+			return fmt.Errorf("Publish to %s: %w", subject, err)
+		}
+	}
+	return nil
+}
+
+// checkRow runs sql, expects exactly one row with exactly the wanted
+// columns and values, and prints it.
+func checkRow(ctx context.Context, eng *natsql.Engine, sql, label string, want map[string]string) error {
+	rows, err := waitForRows(ctx, eng, sql, 1)
+	if err != nil {
+		return err
+	}
+	if err := expectRow(rows[0], want); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	if len(rows[0]) != len(want) {
+		return fmt.Errorf("%s: %d columns, want %d", label, len(rows[0]), len(want))
+	}
+	pretty(rows, label)
 	return nil
 }
 

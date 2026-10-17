@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/gacopys/natsql/v2"
@@ -128,29 +129,9 @@ func run() error {
 
 	// Every rejected event is in the DLQ, with its original bytes
 	fmt.Println("\n── DLQ contents (rejected events) ──")
-	var dead []string
-	for len(dead) < len(rejected) {
-		msg, err := dlqSub.NextMsg(10 * time.Second)
-		if err != nil {
-			return fmt.Errorf("got %d of %d DLQ messages: %w", len(dead), len(rejected), err)
-		}
-		var envelope struct {
-			OriginalMessageB64 string `json:"original_message_b64"`
-			ViewName           string `json:"view_name"`
-			Error              string `json:"error"`
-		}
-		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-			return fmt.Errorf("decoding DLQ envelope: %w", err)
-		}
-		original, err := base64.StdEncoding.DecodeString(envelope.OriginalMessageB64)
-		if err != nil {
-			return fmt.Errorf("decoding DLQ payload: %w", err)
-		}
-		if envelope.ViewName != "users" || envelope.Error == "" {
-			return fmt.Errorf("DLQ envelope = %+v, want view users and an error", envelope)
-		}
-		dead = append(dead, string(original))
-		fmt.Printf("  DLQ[%d]: %s\n          error: %s\n", len(dead), original, envelope.Error)
+	dead, err := readDLQ(dlqSub, len(rejected))
+	if err != nil {
+		return err
 	}
 	slices.Sort(dead)
 	slices.Sort(rejected)
@@ -163,6 +144,36 @@ func run() error {
 
 	fmt.Println("\n✅ Malformed events go to DLQ; valid events process correctly!")
 	return nil
+}
+
+// readDLQ reads n DLQ messages from sub and returns the original events they
+// carry, checking that each names the view and an error.
+func readDLQ(sub *nats.Subscription, n int) ([]string, error) {
+	var events []string
+	for len(events) < n {
+		msg, err := sub.NextMsg(10 * time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("got %d of %d DLQ messages: %w", len(events), n, err)
+		}
+		var envelope struct {
+			OriginalMessageB64 string `json:"original_message_b64"`
+			ViewName           string `json:"view_name"`
+			Error              string `json:"error"`
+		}
+		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
+			return nil, fmt.Errorf("decoding DLQ envelope: %w", err)
+		}
+		original, err := base64.StdEncoding.DecodeString(envelope.OriginalMessageB64)
+		if err != nil {
+			return nil, fmt.Errorf("decoding DLQ payload: %w", err)
+		}
+		if envelope.ViewName != "users" || envelope.Error == "" {
+			return nil, fmt.Errorf("DLQ envelope = %+v, want view users and an error", envelope)
+		}
+		events = append(events, string(original))
+		fmt.Printf("  DLQ[%d]: %s\n          error: %s\n", len(events), original, envelope.Error)
+	}
+	return events, nil
 }
 
 // column returns one column of rows as sorted, comma-joined text, so a

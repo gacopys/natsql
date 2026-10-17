@@ -55,7 +55,20 @@ func run() error {
 	}
 	defer nc.Close()
 
-	// The server created the "events" and "inventory" streams at startup.
+	steps := []func(context.Context, *nats.Conn) error{publishEvents, checkHTTP, checkNATS, checkError}
+	for _, step := range steps {
+		if err := step(ctx, nc); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("\n✅ The natsql server materializes events and answers queries!")
+	return nil
+}
+
+// publishEvents publishes one event to each view's source stream; the server
+// created the "events" and "inventory" streams at startup.
+func publishEvents(ctx context.Context, nc *nats.Conn) error {
 	events := map[string]string{
 		"events.user-created":     `{"id": "u1", "name": "Alice", "email": "alice@test.com", "age": 30}`,
 		"inventory.product-added": `{"sku": "SKU-001", "title": "Widget", "price": 9.99, "stock": true}`,
@@ -69,7 +82,11 @@ func run() error {
 	if err := nc.FlushWithContext(ctx); err != nil {
 		return fmt.Errorf("flushing: %w", err)
 	}
+	return nil
+}
 
+// checkHTTP queries both views over HTTP until the events show up.
+func checkHTTP(ctx context.Context, _ *nats.Conn) error {
 	checks := []struct {
 		sql  string
 		want map[string]string
@@ -89,23 +106,29 @@ func run() error {
 		}
 		fmt.Printf("✓ HTTP  %s → %v\n", c.sql, row)
 	}
+	return nil
+}
 
-	// The same query over NATS request-reply.
+// checkNATS runs a query over NATS request-reply.
+func checkNATS(ctx context.Context, nc *nats.Conn) error {
 	sql := "SELECT name FROM users WHERE user_id = 'u1'"
 	msg, err := nc.RequestWithContext(ctx, "natsql.query", []byte(sql))
 	if err != nil {
 		return fmt.Errorf("NATS query: %w", err)
 	}
-	var viaNATS queryResult
-	if err := json.Unmarshal(msg.Data, &viaNATS); err != nil {
+	var res queryResult
+	if err := json.Unmarshal(msg.Data, &res); err != nil {
 		return fmt.Errorf("decoding NATS reply: %w", err)
 	}
-	if viaNATS.Error != nil || len(viaNATS.Results) != 1 || viaNATS.Results[0]["name"] != "Alice" {
+	if res.Error != nil || len(res.Results) != 1 || res.Results[0]["name"] != "Alice" {
 		return fmt.Errorf("NATS query %q = %s, want Alice", sql, msg.Data)
 	}
-	fmt.Printf("✓ NATS  %s → %v\n", sql, viaNATS.Results[0])
+	fmt.Printf("✓ NATS  %s → %v\n", sql, res.Results[0])
+	return nil
+}
 
-	// Errors come back in the same envelope.
+// checkError checks that errors come back in the same envelope.
+func checkError(ctx context.Context, _ *nats.Conn) error {
 	res, status, err := query(ctx, "SELECT * FROM ghost WHERE id = 'x'")
 	if err != nil {
 		return err
@@ -114,8 +137,6 @@ func run() error {
 		return fmt.Errorf("unknown view: HTTP %d, %+v, want a not-found error", status, res)
 	}
 	fmt.Printf("✓ HTTP  unknown view → error %q\n", *res.Error)
-
-	fmt.Println("\n✅ The natsql server materializes events and answers queries!")
 	return nil
 }
 

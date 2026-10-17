@@ -39,11 +39,6 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	// ── Option A: You already manage NATS yourself ──────────────────
-	fmt.Println("═══ Pattern A: natsql.New(js, cfg) ═══")
-	fmt.Println("You own the NATS connection and JetStream context.")
-	fmt.Println()
-
 	// Start your own NATS server (or connect to existing). Give it its own
 	// store directory: without one, nats-server uses a shared default path
 	// and would see state left by other runs.
@@ -81,7 +76,33 @@ func run() error {
 		return fmt.Errorf("JetStream: %w", err)
 	}
 
-	// Create engine from existing JetStream context
+	engA, err := patternA(ctx, js)
+	if err != nil {
+		return fmt.Errorf("pattern A: %w", err)
+	}
+	defer engA.Close()
+
+	engB, err := patternB(ctx, srv.ClientURL(), js)
+	if err != nil {
+		return fmt.Errorf("pattern B: %w", err)
+	}
+	defer engB.Close()
+
+	// Both engines keep working side by side on one NATS server.
+	if res := engA.Query(ctx, "SELECT * FROM items WHERE id = 'item-1'"); res.Error != nil || len(res.Results) != 1 {
+		return fmt.Errorf("engine A lost its view: %+v", res)
+	}
+
+	fmt.Println("\n✅ natsql works as an embedded Go library!")
+	return nil
+}
+
+// patternA creates an engine from a JetStream context the application owns.
+func patternA(ctx context.Context, js jetstream.JetStream) (*natsql.Engine, error) {
+	fmt.Println("═══ Pattern A: natsql.New(js, cfg) ═══")
+	fmt.Println("You own the NATS connection and JetStream context.")
+	fmt.Println()
+
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
@@ -98,55 +119,50 @@ func run() error {
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "item-stream", Subjects: []string{"items.>"},
 	}); err != nil {
-		return fmt.Errorf("CreateStream: %w", err)
+		return nil, fmt.Errorf("CreateStream: %w", err)
 	}
 
 	eng, err := natsql.New(js, cfg) // You own the connection!
 	if err != nil {
-		return fmt.Errorf("New: %w", err)
+		return nil, fmt.Errorf("New: %w", err)
 	}
-	defer eng.Close()
-
 	if err := eng.Start(ctx); err != nil {
-		return fmt.Errorf("Start: %w", err)
+		eng.Close()
+		return nil, fmt.Errorf("Start: %w", err)
 	}
 
 	// Publish from your own NATS code
-	if _, err := js.Publish(ctx, "items.created", []byte(`{"id": "item-1", "label": "My First Item"}`)); err != nil {
-		return fmt.Errorf("Publish: %w", err)
+	if err := publishAndCheck(ctx, eng, js, "items.created", `{"id": "item-1", "label": "My First Item"}`,
+		"SELECT * FROM items WHERE id = 'item-1'", "label", "My First Item"); err != nil {
+		eng.Close()
+		return nil, err
 	}
+	fmt.Println()
+	return eng, nil
+}
 
-	rows, err := waitForRows(ctx, eng, "SELECT * FROM items WHERE id = 'item-1'", 1)
-	if err != nil {
-		return err
-	}
-	if got := fmt.Sprint(rows[0]["label"]); got != "My First Item" {
-		return fmt.Errorf("item-1 label = %q, want %q", got, "My First Item")
-	}
-	b, _ := json.Marshal(rows) // rows always encode: they came from JSON
-	fmt.Printf("  ✓ Query result: %s\n\n", b)
-
-	// ── Option B: You have a NATS connection (convenience) ──────────
+// patternB creates an engine from a NATS connection it then owns.
+func patternB(ctx context.Context, url string, js jetstream.JetStream) (*natsql.Engine, error) {
 	fmt.Println("═══ Pattern B: natsql.NewWithNATS(nc, cfg) ═══")
 	fmt.Println("Pass your NATS connection — engine handles JetStream setup.")
 	fmt.Println()
 
-	// Create a separate connection for Pattern B to avoid lifecycle hazard
-	// (NewWithNATS takes ownership of the connection, closing it on Close())
-	nc2, err := nats.Connect(srv.ClientURL())
+	// A separate connection, because NewWithNATS takes ownership of it and
+	// closes it on Close().
+	nc, err := nats.Connect(url)
 	if err != nil {
-		return fmt.Errorf("Connect (B): %w", err)
+		return nil, fmt.Errorf("Connect: %w", err)
 	}
 
-	// Create stream before starting engine (Pattern B)
+	// Create stream before starting engine
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "note-stream", Subjects: []string{"notes.>"},
 	}); err != nil {
-		nc2.Close()
-		return fmt.Errorf("CreateStream: %w", err)
+		nc.Close()
+		return nil, fmt.Errorf("CreateStream: %w", err)
 	}
 
-	eng2, err := natsql.NewWithNATS(nc2, &natsql.Config{
+	eng, err := natsql.NewWithNATS(nc, &natsql.Config{
 		Views: []natsql.ViewConfig{
 			{
 				Name: "notes", SourceStream: "note-stream", KeyFields: []string{"id"},
@@ -158,34 +174,37 @@ func run() error {
 		},
 	}, natsql.WithQueryPort(8081))
 	if err != nil {
-		nc2.Close()
-		return fmt.Errorf("NewWithNATS: %w", err)
+		nc.Close()
+		return nil, fmt.Errorf("NewWithNATS: %w", err)
 	}
-	defer eng2.Close()
+	if err := eng.Start(ctx); err != nil {
+		eng.Close()
+		return nil, fmt.Errorf("Start: %w", err)
+	}
 
-	if err := eng2.Start(ctx); err != nil {
-		return fmt.Errorf("Start (B): %w", err)
+	if err := publishAndCheck(ctx, eng, js, "notes.created", `{"id": "note-1", "text": "Hello from NewWithNATS!"}`,
+		"SELECT * FROM notes WHERE id = 'note-1'", "text", "Hello from NewWithNATS!"); err != nil {
+		eng.Close()
+		return nil, err
 	}
-	if _, err := js.Publish(ctx, "notes.created", []byte(`{"id": "note-1", "text": "Hello from NewWithNATS!"}`)); err != nil {
+	return eng, nil
+}
+
+// publishAndCheck publishes event, waits for sql to return one row, and
+// checks one of its columns.
+func publishAndCheck(ctx context.Context, eng *natsql.Engine, js jetstream.JetStream, subject, event, sql, col, want string) error {
+	if _, err := js.Publish(ctx, subject, []byte(event)); err != nil {
 		return fmt.Errorf("Publish: %w", err)
 	}
-
-	rows, err = waitForRows(ctx, eng2, "SELECT * FROM notes WHERE id = 'note-1'", 1)
+	rows, err := waitForRows(ctx, eng, sql, 1)
 	if err != nil {
 		return err
 	}
-	if got := fmt.Sprint(rows[0]["text"]); got != "Hello from NewWithNATS!" {
-		return fmt.Errorf("note-1 text = %q, want %q", got, "Hello from NewWithNATS!")
+	if got := fmt.Sprint(rows[0][col]); got != want {
+		return fmt.Errorf("%s: %s = %q, want %q", sql, col, got, want)
 	}
-	b, _ = json.Marshal(rows) // rows always encode: they came from JSON
+	b, _ := json.Marshal(rows) // rows always encode: they came from JSON
 	fmt.Printf("  ✓ Query result: %s\n", b)
-
-	// Each engine only knows its own views.
-	if res := eng.Query(ctx, "SELECT * FROM items WHERE id = 'item-1'"); res.Error != nil || len(res.Results) != 1 {
-		return fmt.Errorf("engine A lost its view: %+v", res)
-	}
-
-	fmt.Println("\n✅ natsql works as an embedded Go library!")
 	return nil
 }
 

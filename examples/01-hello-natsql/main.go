@@ -99,26 +99,17 @@ func run() error {
 	fmt.Printf("✓ SQL query: %+v\n", rows)
 
 	// ── Step 5: Query via HTTP ─────────────────────────────────────
-	body, err := json.Marshal(map[string]string{"sql": "SELECT * FROM users WHERE user_id = 'abc123'"})
+	rows, err = queryHTTP(eng.Stats().HTTPAddr, "SELECT * FROM users WHERE user_id = 'abc123'")
 	if err != nil {
-		return fmt.Errorf("encoding HTTP request: %w", err)
+		return err
 	}
-	rsp, err := http.Post("http://"+eng.Stats().HTTPAddr+"/api/v1/query", "application/json", bytes.NewReader(body))
-	if err != nil {
+	if len(rows) != 1 {
+		return fmt.Errorf("HTTP query: %d rows, want 1", len(rows))
+	}
+	if err := expectRow(rows[0], map[string]string{"user_id": "abc123", "name": "Alice"}); err != nil {
 		return fmt.Errorf("HTTP query: %w", err)
 	}
-	defer rsp.Body.Close()
-	var httpResult natsql.QueryResult
-	if err := json.NewDecoder(rsp.Body).Decode(&httpResult); err != nil {
-		return fmt.Errorf("decoding HTTP response: %w", err)
-	}
-	if rsp.StatusCode != http.StatusOK || httpResult.Error != nil || len(httpResult.Results) != 1 {
-		return fmt.Errorf("HTTP query: status %d, result %+v, want one row", rsp.StatusCode, httpResult)
-	}
-	if err := expectRow(httpResult.Results[0], map[string]string{"user_id": "abc123", "name": "Alice"}); err != nil {
-		return fmt.Errorf("HTTP query: %w", err)
-	}
-	fmt.Printf("✓ HTTP query: %+v\n", httpResult.Results)
+	fmt.Printf("✓ HTTP query: %+v\n", rows)
 
 	// ── Step 6: Stats ──────────────────────────────────────────────
 	stats := eng.Stats()
@@ -129,6 +120,27 @@ func run() error {
 		stats.Started, stats.Ready, stats.Views, stats.ViewStatus[0].EventsProcessed)
 	fmt.Println("\n✅ natsql works end-to-end with zero infrastructure!")
 	return nil
+}
+
+// queryHTTP posts sql to the engine's HTTP query API at addr.
+func queryHTTP(addr, sql string) ([]map[string]any, error) {
+	body, err := json.Marshal(map[string]string{"sql": sql})
+	if err != nil {
+		return nil, fmt.Errorf("encoding HTTP request: %w", err)
+	}
+	rsp, err := http.Post("http://"+addr+"/api/v1/query", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("HTTP query: %w", err)
+	}
+	defer rsp.Body.Close()
+	var result natsql.QueryResult
+	if err := json.NewDecoder(rsp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding HTTP response: %w", err)
+	}
+	if rsp.StatusCode != http.StatusOK || result.Error != nil {
+		return nil, fmt.Errorf("HTTP query: status %d, result %+v", rsp.StatusCode, result)
+	}
+	return result.Results, nil
 }
 
 // waitForRows runs sql until it returns want rows, so the example doesn't

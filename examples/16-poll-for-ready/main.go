@@ -83,6 +83,31 @@ func run() error {
 	}
 	fmt.Println()
 
+	if err := pollForRows(ctx, eng, total); err != nil {
+		return err
+	}
+
+	fmt.Println("── LIMIT query ──")
+	res := eng.Query(ctx, "SELECT * FROM orders WHERE order_id != '' LIMIT 5")
+	if res.Error != nil || len(res.Results) != 5 {
+		return fmt.Errorf("LIMIT 5 returned %+v, want 5 rows", res)
+	}
+	b, _ := json.MarshalIndent(res.Results, "    ", "  ") // rows always encode: they came from JSON
+	fmt.Printf("  ✓ LIMIT 5:\n%s\n", string(b))
+
+	res = eng.Query(ctx, "SELECT amount FROM orders WHERE order_id = 'ord-029'")
+	if res.Error != nil || len(res.Results) != 1 || fmt.Sprint(res.Results[0]["amount"]) != "53.50" {
+		return fmt.Errorf("ord-029 = %+v, want amount 53.50", res)
+	}
+	fmt.Printf("  ✓ Last order: %v\n", res.Results)
+
+	fmt.Println("✅ Polling for materialization readiness works!")
+	return nil
+}
+
+// pollForRows queries the view until it holds total rows, printing progress,
+// and gives up after 10 seconds.
+func pollForRows(ctx context.Context, eng *natsql.Engine, total int) error {
 	fmt.Println("Polling for materialization readiness...")
 	fmt.Printf("  Timeout: 10s | Target: %d rows\n\n", total)
 
@@ -108,21 +133,5 @@ func run() error {
 	}
 
 	fmt.Printf("\n✓ All %d rows materialized in %v\n\n", total, time.Since(pollStart))
-
-	fmt.Println("── LIMIT query ──")
-	res := eng.Query(ctx, "SELECT * FROM orders WHERE order_id != '' LIMIT 5")
-	if res.Error != nil || len(res.Results) != 5 {
-		return fmt.Errorf("LIMIT 5 returned %+v, want 5 rows", res)
-	}
-	b, _ := json.MarshalIndent(res.Results, "    ", "  ") // rows always encode: they came from JSON
-	fmt.Printf("  ✓ LIMIT 5:\n%s\n", string(b))
-
-	res = eng.Query(ctx, "SELECT amount FROM orders WHERE order_id = 'ord-029'")
-	if res.Error != nil || len(res.Results) != 1 || fmt.Sprint(res.Results[0]["amount"]) != "53.50" {
-		return fmt.Errorf("ord-029 = %+v, want amount 53.50", res)
-	}
-	fmt.Printf("  ✓ Last order: %v\n", res.Results)
-
-	fmt.Println("✅ Polling for materialization readiness works!")
 	return nil
 }
