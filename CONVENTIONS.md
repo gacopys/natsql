@@ -57,7 +57,7 @@ natsql/                       # public facade: New, NewWithNATS, NewEmbedded, Qu
 - Pass a `*slog.Logger` down; default to `slog.Default()` when none provided (`WithLogger` option).
 - Always log structured key/value pairs: `logger.Info("materializer started", "view", vc.Name, "source_stream", vc.SourceStream)`.
 - Levels: `Info` lifecycle start/stop, `Warn` recoverable issues, `Error` non-fatal failures. The `sloglint` linter enforces no-mixed-args.
-- Tests use `slog.New(slog.NewTextHandler(io.Discard, nil))` to keep output clean.
+- Tests use `slog.New(slog.DiscardHandler)` to keep output clean.
 
 ## 6. Constructors & Options
 

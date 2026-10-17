@@ -164,7 +164,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 - Wrap with `%w`: `fmt.Errorf("…: %w", err)`. Never swallow — assign `_` with a one-line why-comment. `Query` returns `*QueryResult` with `Error *string` (never a Go error). Constructors return `(T, error)`. Classify at the caller (`materializer.classifyWriteError`), not inside `Writer.Apply`.
 
 ### Logging
-- `log/slog` only, structured k/v pairs. Pass `*slog.Logger` down; default `slog.Default()`. Tests discard output: `slog.New(slog.NewTextHandler(io.Discard, nil))`.
+- `log/slog` only, structured k/v pairs. Pass `*slog.Logger` down; default `slog.Default()`. Tests discard output: `slog.New(slog.DiscardHandler)`.
 
 ### Constructors & options
 - `New…` names; variadic `Option func(*Engine)`; `WithLogger`/`WithHTTPServer`/`WithQueryPort`. `SetDefaults()`+`Validate()` run automatically in the facade. `Validate()` collects *all* errors and returns one joined message. Ownership is documented (`NewWithNATS` owns `nc.Close()`, `New` does not); `Close()` is idempotent.

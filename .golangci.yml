@@ -1,27 +1,22 @@
+version: "2"
+
 run:
-  timeout: 3m
   go: "1.26"
   modules-download-mode: readonly
 
 output:
   formats:
-    - format: colored-line-number
+    text:
+      path: stdout
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
 linters:
+  # default: standard — errcheck, govet, ineffassign, staticcheck (includes
+  # the former gosimple), unused. typecheck always runs.
   enable:
-    # default (enabled by default, listed for clarity):
-    - errcheck       # unchecked error return values
-    - gosimple       # code simplification
-    - govet          # correctness checks
-    - ineffassign    # ineffectual assignments
-    - staticcheck    # comprehensive static analysis
-    - typecheck      # type-checking
-    - unused         # unused code detection
-
     # additional bug/quality detectors:
     - asasalint                  # variadic ...any in front of ...any
     - bodyclose                  # unclosed HTTP response bodies
@@ -32,10 +27,8 @@ linters:
     - errorlint                  # error wrapping and comparison
     - exhaustive                 # missing enum switch cases
     - fatcontext                 # context.Value chaining in structs
-    - gci                        # import ordering and grouping
     - gocheckcompilerdirectives  # validate //go:build / //go:generate directives
     - godot                      # doc comments end with a period
-    - gofumpt                    # strict gofmt
     - gosec                      # security-sensitive code patterns
     - intrange                   # Go 1.22+ integer range loop simplifications
     - misspell                   # US English spelling
@@ -43,7 +36,7 @@ linters:
     - nakedret                   # naked (bare) returns
     - nilerr                     # functions that return nil error after handling an error
     - nilnesserr                 # stricter nil-error analysis
-    - noctx                      # net/http requests without context
+    - noctx                      # network calls without context
     - nolintlint                 # malformed //nolint directives
     - paralleltest               # tests missing t.Parallel()
     - perfsprint                 # sprintf that can be replaced with faster alternatives
@@ -56,117 +49,139 @@ linters:
     - usestdlibvars              # standard library constants and variables
     - whitespace                 # blank lines around control flow
 
-linters-settings:
-  # ----- depguard: prevent internal/ from importing the root facade -----
-  depguard:
-    rules:
-      no-root-from-internal:
-        files:
-          - "**/internal/**/*.go"
-          - "!**/*_test.go"
-        deny:
-          - pkg: "github.com/gacopys/natsql$"
-            desc: "internal packages must not import the root natsql package (import cycle risk)"
-
-  errcheck:
-    check-type-assertions: true
-
-  exhaustive:
-    check-generated: false
-    default-signifies-exhaustive: true
-
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/gacopys/natsql)
-    custom-order: true
-
-  # ----- godot: doc comments must end with a period -----
-  godot:
-    capital: true
-    period: true
-    scope: declarations
-    exclude:
-      - "^Deprecated"
-      - "^Example"
-
-  gofumpt:
-    module-path: github.com/gacopys/natsql
-
-  gosec:
-    excludes:
-      - G115
-
-  misspell:
-    locale: US
-
-  nakedret:
-    max-func-lines: 30
-
-  # ----- paralleltest: flag tests missing t.Parallel() -----
-  paralleltest:
-    ignore-missing: true
-    ignore-missing-subtests: true
-
-  perfsprint:
-    int-conversion: true
-    sprintf1: true
-
-  # ----- revive: replaces golint, enforces doc-comments + code style -----
-  revive:
-    enable-all-rules: false
-    confidence: 0.8
-    rules:
-      - name: exported
-        severity: warning
-      - name: error-strings
-        severity: warning
-      - name: error-naming
-        severity: warning
-      - name: receiver-naming
-        severity: warning
-      - name: early-return
-        severity: warning
-      - name: superfluous-else
-        severity: warning
-        arguments:
-          - preserveScope: false
-      - name: unused-parameter
-        severity: warning
-      - name: increment-decrement
-        severity: warning
-      - name: range
-        severity: warning
-      - name: blank-imports
-        severity: warning
-      - name: struct-tag
-        severity: warning
-      - name: use-any
-        severity: warning
-
-  sloglint:
-    no-mixed-args: true
-
-  # ----- tagliatelle: enforce snake_case on struct tags -----
-  tagliatelle:
-    case:
-      use-field-name: true
+  settings:
+    # ----- depguard: prevent internal/ from importing the root facade -----
+    depguard:
       rules:
-        json: snake
-        yaml: snake
+        no-root-from-internal:
+          files:
+            - "**/internal/**/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/gacopys/natsql$"
+              desc: "internal packages must not import the root natsql package (import cycle risk)"
 
-  usestdlibvars:
-    constant-kind: true
-    crypto-hash: true
-    http-method: true
-    http-status-code: true
-    sql-isolation-level: true
-    time-layout: true
-    time-month: true
-    time-weekday: true
-    tls-signature-scheme: true
+    errcheck:
+      check-type-assertions: true
 
-  whitespace:
-    multi-if: true
-    multi-func: true
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    # ----- godot: doc comments must end with a period -----
+    godot:
+      capital: true
+      period: true
+      scope: declarations
+      exclude:
+        - "^Deprecated"
+        - "^Example"
+
+    gosec:
+      excludes:
+        - G115
+
+    misspell:
+      locale: US
+
+    nakedret:
+      max-func-lines: 30
+
+    # ----- paralleltest: flag tests missing t.Parallel() -----
+    paralleltest:
+      ignore-missing: true
+      ignore-missing-subtests: true
+
+    perfsprint:
+      int-conversion: true
+      sprintf1: true
+
+    # ----- revive: replaces golint, enforces doc-comments + code style -----
+    revive:
+      enable-all-rules: false
+      confidence: 0.8
+      rules:
+        - name: exported
+          severity: warning
+        - name: error-strings
+          severity: warning
+        - name: error-naming
+          severity: warning
+        - name: receiver-naming
+          severity: warning
+        - name: early-return
+          severity: warning
+        - name: superfluous-else
+          severity: warning
+          arguments:
+            - preserveScope: false
+        - name: unused-parameter
+          severity: warning
+        - name: increment-decrement
+          severity: warning
+        - name: range
+          severity: warning
+        - name: blank-imports
+          severity: warning
+        - name: struct-tag
+          severity: warning
+        - name: use-any
+          severity: warning
+
+    sloglint:
+      no-mixed-args: true
+
+    # ----- tagliatelle: enforce snake_case on struct tags -----
+    tagliatelle:
+      case:
+        use-field-name: true
+        rules:
+          json: snake
+          yaml: snake
+
+    usestdlibvars:
+      constant-kind: true
+      crypto-hash: true
+      http-method: true
+      http-status-code: true
+      sql-isolation-level: true
+      time-layout: true
+      time-month: true
+      time-weekday: true
+      tls-signature-scheme: true
+
+    whitespace:
+      multi-if: true
+      multi-func: true
+
+  # Parity with v1's default exclusions (golangci-lint migrate).
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  enable:
+    - gci       # import ordering and grouping
+    - gofumpt   # strict gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/gacopys/natsql)
+      custom-order: true
+    gofumpt:
+      module-path: github.com/gacopys/natsql
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

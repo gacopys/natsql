@@ -17,6 +17,9 @@ Fixes for the five Critical findings of the October 2026 code review (WR-01 to W
 ### Config Validation
 - **Changed**: `key_separator` values containing `_` (the PK escape character) or `..` (an empty NATS subject token) are now rejected
 
+### Build & CI
+- **Changed**: Lint runs on golangci-lint v2.14.0, because v1.64.8 can't analyze code built with Go 1.27. `.golangci.yml` is migrated to the v2 format with the same linters and settings. The new findings are fixed: tests use `slog.DiscardHandler`, and the HTTP listener binds through `net.ListenConfig`
+
 ### Upgrade notes
 - **Keys unchanged for most views.** Single-component keys, and composite keys using the default `/` separator, encode exactly as before for every value that worked before. No action is needed for these views.
 - **Views with a custom `key_separator` and composite keys must be re-materialized** if any component value contains a character of the separator: such rows are now written under a new key, and the old row stays in the bucket. Stop natsql, purge the view's rows (`<view>/pk/…` keys in `natsql-views`), delete its durable consumer (`nats consumer rm <source_stream> natsql-<view>`), and restart. The view then replays from the start of its source stream.

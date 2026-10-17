@@ -43,7 +43,7 @@ func (a *httpAdapter) RunQuery(w http.ResponseWriter, r *http.Request) {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"results":[],"error":"request body too large (max %d bytes)"}`, maxRequestBodySize))) // best-effort write; response already committed
+			_, _ = fmt.Fprintf(w, `{"results":[],"error":"request body too large (max %d bytes)"}`, maxRequestBodySize) // best-effort write; response already committed
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

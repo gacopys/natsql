@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"runtime"
 	"sync"
@@ -50,7 +49,7 @@ func TestEngineEndToEnd(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -143,7 +142,7 @@ func TestEngineMultipleViews(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -227,7 +226,7 @@ func TestEngineMalformedEvent(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -315,7 +314,7 @@ func TestEngineRestart(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -398,7 +397,7 @@ func TestEngineDoubleStart(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -460,7 +459,7 @@ func TestEngineNewEmbedded(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.NewEmbedded(cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("NewEmbedded failed: %v", err)
@@ -559,7 +558,7 @@ func TestEngineStats(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -640,7 +639,7 @@ func TestEngineGoroutineLeak(t *testing.T) {
 
 	baseline := baselineGoroutines()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -987,7 +986,7 @@ func TestEngineFullLifecycleViaFacade(t *testing.T) {
 
 	baseline := baselineGoroutines()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	// Use the natsql.NewWithNATS facade
 	eng, err := natsql.NewWithNATS(nc, cfg, natsql.WithLogger(logger))
@@ -1082,7 +1081,7 @@ func TestEngineGracefulShutdown(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := natsql.NewWithNATS(nc, cfg, natsql.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("NewWithNATS failed: %v", err)
@@ -1170,7 +1169,7 @@ func TestEngineNCEdgeCases(t *testing.T) {
 			},
 		},
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nil, js, cfg, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1334,7 +1333,7 @@ func TestEngineQueryAndStartDoNotReconfigureBucket(t *testing.T) {
 		}
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{}, engine.WithLogger(logger), engine.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)
@@ -1362,7 +1361,7 @@ func TestEngineQueryBeforeBucketExists(t *testing.T) {
 	defer cancel()
 
 	nc, js := startEmbeddedNATS(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := engine.New(nc, js, &natsqlpkg.Config{}, engine.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("New engine failed: %v", err)

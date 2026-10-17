@@ -367,7 +367,7 @@ func (r *racingKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry
 	entry, err := r.KeyValue.Get(ctx, key)
 	if !r.raced {
 		r.raced = true
-		if _, putErr := r.KeyValue.Put(ctx, key, r.raceValue); putErr != nil {
+		if _, putErr := r.Put(ctx, key, r.raceValue); putErr != nil {
 			return nil, putErr
 		}
 	}

@@ -255,7 +255,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Info("NATS query handler registered", "subject", "natsql.query")
 	}
 
-	if err := e.startHTTPServer(); err != nil {
+	if err := e.startHTTPServer(ctx); err != nil {
 		return err
 	}
 
@@ -318,12 +318,13 @@ startupLoop:
 	return drainChans, nil
 }
 
-func (e *Engine) startHTTPServer() error {
+func (e *Engine) startHTTPServer(ctx context.Context) error {
 	router := transport.NewRouter()
 	transport.RegisterHTTPHandler(router, e)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
-	// CR-07: net.Listen before Serve so bind errors propagate synchronously.
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", e.queryPort))
+	// CR-07: Listen before Serve so bind errors propagate synchronously.
 	if err != nil {
 		return fmt.Errorf("HTTP listen failed on port %d: %w", e.queryPort, err)
 	}

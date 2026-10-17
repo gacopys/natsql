@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"runtime"
 	"strings"
@@ -62,7 +61,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -159,7 +158,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -229,7 +228,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -311,7 +310,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 
 	matCtx, matCancel := context.WithCancel(context.Background())
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -365,7 +364,7 @@ func TestMaterializer_SchemaStoredInKV(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -459,7 +458,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -540,7 +539,7 @@ func TestMaterializerDrain(t *testing.T) {
 		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	drainCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
@@ -630,7 +629,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -713,7 +712,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
@@ -943,7 +942,7 @@ func newProcessEventMapper(t *testing.T) *Mapper {
 
 func TestProcessEvent_TransientWriteError_NAKsWithBackoff(t *testing.T) {
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{}
 	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
@@ -972,7 +971,7 @@ func TestProcessEvent_TransientWriteError_NAKsWithBackoff(t *testing.T) {
 // would not redeliver it.
 func TestProcessEvent_TransientWriteError_FinalDeliveryDLQ(t *testing.T) {
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{}
 	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
@@ -995,7 +994,7 @@ func TestProcessEvent_TransientWriteError_FinalDeliveryDLQ(t *testing.T) {
 
 func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{}
 	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
@@ -1018,7 +1017,7 @@ func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
 
 func TestProcessEvent_DLQPublishFailure_NAKsWithBackoff(t *testing.T) {
 	ctx := context.Background()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	js := &fakeJS{publishErr: nats.ErrNoResponders}
 	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
@@ -1176,7 +1175,7 @@ func runMaterializer(t *testing.T, js jetstream.JetStream, viewCfg *natsql.ViewC
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, js, viewCfg, bucket, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+		done <- Run(ctx, js, viewCfg, bucket, slog.New(slog.DiscardHandler), nil)
 	}()
 	t.Cleanup(func() {
 		cancel()

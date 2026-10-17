@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -152,7 +151,7 @@ func TestBlackBox_Queries(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
@@ -535,7 +534,7 @@ func TestBlackBox_CompositeKey(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger), natsql.WithQueryPort(0))
 	if err != nil {
 		t.Fatalf("New engine: %v", err)
