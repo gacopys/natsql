@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql/internal/cfg"
+	natsql "github.com/gacopys/natsql/v2/internal/cfg"
 )
 
 func TestNewMapper_NilConfig_ReturnsError(t *testing.T) {
@@ -543,34 +543,51 @@ func TestMapRow_NestedPathDepthLimit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// stringifyValue + sanitizePK unit tests
+// PK component formatting
 // ---------------------------------------------------------------------------
 
-func TestStringifyValue_Cases(t *testing.T) {
-	tests := []struct {
-		val  any
-		want string // sanitized output
-	}{
-		{"hello", "hello"},
-		{float64(3.14), "3.14"},
-		{true, "true"},
-		{false, "false"},
-		{json.Number("42"), "42"},
-		{json.Number("9007199254740993"), "9007199254740993"},
-		{struct{}{}, "{}"},
+// TestMapRow_NumericPKIsCanonical verifies that every JSON spelling of one
+// number produces the same PK component, so equal keys share one row (WR-06).
+func TestMapRow_NumericPKIsCanonical(t *testing.T) {
+	m, err := NewMapper(&natsql.ViewConfig{
+		Name:      "v",
+		KeyFields: []string{"id"},
+		Columns:   []natsql.ColumnConfig{{Name: "id", From: "id", Type: natsql.ColumnTypeNumber, PrimaryKey: true}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper failed: %v", err)
 	}
-	for _, tc := range tests {
-		got := stringifyValue(tc.val)
-		if got != tc.want {
-			t.Errorf("stringifyValue(%v) = %q, want %q", tc.val, got, tc.want)
+	for _, spelling := range []string{"1000", "1000.0", "1e3", "1.000E+3", "10000e-1"} {
+		mut, err := m.MapRow(&fakeMsg{data: []byte(`{"id":` + spelling + `}`), seq: 1})
+		if err != nil {
+			t.Fatalf("MapRow(%s) failed: %v", spelling, err)
+		}
+		if len(mut.PKParts) != 1 || mut.PKParts[0] != "1000" {
+			t.Errorf("MapRow(%s) PKParts = %q, want [1000]", spelling, mut.PKParts)
+		}
+		if mut.RowData["id"] != json.Number(spelling) {
+			t.Errorf("MapRow(%s) stored id = %v, want the original spelling", spelling, mut.RowData["id"])
 		}
 	}
 }
 
-func TestStringifyValue_RawNoSanitization(t *testing.T) {
-	got := stringifyValue("a/b|c")
-	if got != "a/b|c" {
-		t.Errorf("stringifyValue with special chars = %q, want %q", got, "a/b|c")
+// TestMapRow_StringPKIsRaw verifies that string PK parts are passed on
+// unescaped: BuildPKKey is the only encoder (CR-02).
+func TestMapRow_StringPKIsRaw(t *testing.T) {
+	m, err := NewMapper(&natsql.ViewConfig{
+		Name:      "v",
+		KeyFields: []string{"id"},
+		Columns:   []natsql.ColumnConfig{{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper failed: %v", err)
+	}
+	mut, err := m.MapRow(&fakeMsg{data: []byte(`{"id":"a/b|c.d"}`), seq: 1})
+	if err != nil {
+		t.Fatalf("MapRow failed: %v", err)
+	}
+	if mut.PKParts[0] != "a/b|c.d" {
+		t.Errorf("PKParts = %q, want the raw value", mut.PKParts)
 	}
 }
 

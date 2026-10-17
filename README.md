@@ -132,6 +132,8 @@ eng, err := natsql.NewEmbedded(cfg)
 
 Starts a NATS JetStream server in-process. No external NATS required. Perfect for development, testing, single-node deployments, and appliances.
 
+Without `nats.store_dir`, each embedded engine keeps its JetStream data in a private temporary directory that is deleted on `Close`. Set `store_dir` to keep views across restarts.
+
 ### B) Go Library Embed
 
 ```go
@@ -151,7 +153,15 @@ natsql server --config=config.yaml --embedded
 natsql server --config=config.yaml -u nats://my-cluster:4222
 ```
 
-The `natsql` binary provides a full server with HTTP + NATS query endpoints, graceful shutdown, and config-driven setup.
+The `natsql` binary provides a full server with HTTP + NATS query endpoints, graceful shutdown, and config-driven setup. In external mode it reconnects to NATS indefinitely through outages.
+
+If a view's definition (columns, mappings, key fields, separator or source) changes, or the view was materialized by a natsql version with the earlier key layout, the server refuses to start with `view must be rebuilt`. Stop every server materializing it, then rebuild it from its source stream:
+
+```bash
+natsql drop-view --config=config.yaml --view=users   # then start the server again
+```
+
+The view is replayed from the beginning of its source stream, so events the stream no longer retains are not restored.
 
 ---
 
@@ -172,6 +182,12 @@ curl -X POST http://127.0.0.1:8080/api/v1/query \
 ```bash
 nats req natsql.query "SELECT * FROM users WHERE user_id = 'abc123'"
 ```
+
+Engines subscribe in queue group `natsql`, so replicas with the same config share requests. Give independent deployments on one NATS account their own subject with `nats.query_subject`. A result larger than the server's max payload is answered with an error; add a `LIMIT` or use HTTP.
+
+### Health
+
+`GET /healthz` (liveness) and `GET /readyz` (200 once every view's materializer is consuming and NATS is connected, 503 otherwise) return the engine's status: per-view state, restarts, event counters and last error. The same data is available in Go from `eng.Stats()`.
 
 ### In-Process Go
 
@@ -199,7 +215,7 @@ FROM view_name
 - `WHERE col != 'val'` (not-equal)
 - `WHERE col IN ('a', 'b', 'c')` (value list)
 - Multiple conditions joined with `AND`
-- `LIMIT n`
+- `LIMIT n` (`LIMIT 0` returns no rows; `OFFSET` is not supported)
 - String, integer, float, boolean, and `NULL` literals
 - Typed JSON output (numbers stay numbers, booleans stay booleans)
 - Dot-path field notation (`org.id`), optional `$.` prefix
@@ -244,6 +260,8 @@ views:
         type: string
 ```
 
+View names may contain only letters, digits and `_`, and must not start with a digit. A view's `consumer.max_deliver` is how many delivery attempts an event gets before a transient failure sends it to the DLQ (default 10; `-1` retries forever).
+
 ### Column Types
 
 | Type | JSON Source |
@@ -268,8 +286,8 @@ Hands-on examples in `examples/` — each is a standalone Go program:
 | 03 | [malformed-events](examples/03-malformed-events) | Invalid JSON → DLQ, type mismatch → DLQ |
 | 04 | [multiple-views](examples/04-multiple-views) | Two views, cross-view isolation |
 | 05 | [library-embed](examples/05-library-embed) | Embedding in Go apps (`New` / `NewWithNATS`) |
-| 06 | [cli-server](examples/06-cli-server) | Standalone binary with config file |
-| 07 | [perf-benchmark](examples/07-perf-benchmark) | High-throughput pub/sub, query latency benchmarks |
+| 06 | [cli-server](examples/06-cli-server) | Standalone binary with config file, plus a NATS + HTTP client |
+| 07 | [perf-benchmark](examples/07-perf-benchmark) | High-throughput pub/sub, query latency benchmarks (`-events=N`) |
 | 08 | [where-operators](examples/08-where-operators) | `WHERE IN`, `WHERE !=`, full table scan |
 | 09 | [key-separator](examples/09-key-separator) | Custom `key_separator`, PK sanitization |
 | 10 | [source-subject](examples/10-source-subject) | `source_subject` filter, subject routing |
@@ -285,6 +303,7 @@ Hands-on examples in `examples/` — each is a standalone Go program:
 
 ```bash
 cd examples/01-hello-natsql && go run .
+examples/run.sh   # run every example; each checks its own results
 ```
 
 ---

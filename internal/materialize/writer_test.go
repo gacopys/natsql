@@ -10,8 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/kv"
-	"github.com/gacopys/natsql/internal/testutil"
+	"github.com/gacopys/natsql/v2/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/testutil"
 )
 
 func TestNewWriter(t *testing.T) {

@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql/internal/cfg"
-	kvpkg "github.com/gacopys/natsql/internal/kv"
+	natsql "github.com/gacopys/natsql/v2/internal/cfg"
+	kvpkg "github.com/gacopys/natsql/v2/internal/kv"
 )
 
 const maxNestingDepth = 8 // T-02-02: limit JSON path depth
@@ -92,7 +91,11 @@ func (m *Mapper) MapRow(msg jetstream.Msg) (*RowMutation, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: key field %q not found in extracted data", ErrMalformedEvent, keyField)
 		}
-		pkParts[i] = stringifyValue(val)
+		part, err := kvpkg.FormatPKValue(val) // WR-06: same canonical form the planner uses
+		if err != nil {
+			return nil, fmt.Errorf("%w: key field %q: %w", ErrMalformedEvent, keyField, err)
+		}
+		pkParts[i] = part
 	}
 
 	// 4. Extract metadata
@@ -198,28 +201,5 @@ func validateType(val any, colType natsql.ColumnType, colName string) (any, erro
 
 	default:
 		return nil, fmt.Errorf("column %q: unknown column type %q", colName, colType)
-	}
-}
-
-// stringifyValue converts a typed value to its string representation
-// for use in PK construction. Returns the raw string — sanitization
-// happens at the KV boundary in BuildPKKey.
-func stringifyValue(val any) string {
-	switch v := val.(type) {
-	case string:
-		return v
-	case json.Number:
-		return v.String() // exact representation, no float64 precision loss
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	case time.Time:
-		return v.Format(time.RFC3339Nano)
-	default:
-		return fmt.Sprint(v)
 	}
 }

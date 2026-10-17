@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/kv"
 )
 
 // maxCASAttempts bounds how often Apply re-reads a row after losing a

@@ -1,4 +1,4 @@
-module github.com/gacopys/natsql
+module github.com/gacopys/natsql/v2
 
 go 1.26.5
 
@@ -34,3 +34,5 @@ require (
 	google.golang.org/grpc v1.82.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+retract v2.0.0 // Tagged before the module path had the /v2 suffix (BLD-01).

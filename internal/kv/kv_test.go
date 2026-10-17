@@ -2,7 +2,10 @@ package kv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -12,12 +15,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/testutil"
+	"github.com/gacopys/natsql/v2/internal/testutil"
 )
 
 func TestSchemaKey(t *testing.T) {
 	result := SchemaKey("users")
-	expected := "users/meta/schema"
+	expected := "users.meta.schema"
 	if result != expected {
 		t.Errorf("SchemaKey(\"users\") = %q, want %q", result, expected)
 	}
@@ -148,35 +151,6 @@ func TestStoreSchema_OverwriteUpdatesSchema(t *testing.T) {
 	}
 }
 
-func TestSanitizePK(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"abc", "abc"},
-		{"a|b", "a_pb"},
-		{"a/b", "a_sb"},
-		{"a*b", "a_ab"},
-		{"a>b", "a_gb"},
-		{"a_b", "a__b"},
-		{"a|/", "a_p_s"},
-	}
-	for _, tc := range tests {
-		got := SanitizePK(tc.input)
-		if got != tc.want {
-			t.Errorf("SanitizePK(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-func TestPKKey_Sanitization(t *testing.T) {
-	got := PKKey("view", "a|b/c*d>e_f")
-	want := "view/pk/a_pb_sc_ad_ge__f"
-	if got != want {
-		t.Errorf("PKKey = %q, want %q", got, want)
-	}
-}
-
 func TestBuildPKKey(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -185,17 +159,16 @@ func TestBuildPKKey(t *testing.T) {
 		separator string
 		want      string
 	}{
-		{"single part", "users", []string{"abc"}, "|", "users/pk/abc"},
-		{"composite", "users", []string{"a", "b"}, "|", "users/pk/a|b"},
-		{"underscore", "users", []string{"a_b"}, "|", "users/pk/a__b"},
-		{"pipe", "users", []string{"a|b"}, "|", "users/pk/a_pb"},
-		{"slash", "users", []string{"a/b"}, "|", "users/pk/a_sb"},
-		{"star", "users", []string{"a*b"}, "|", "users/pk/a_ab"},
-		{"greater", "users", []string{"a>b"}, "|", "users/pk/a_gb"},
-		{"double underscore", "users", []string{"a__b"}, "|", "users/pk/a____b"},
-		{"custom sep slash", "users", []string{"hello", "world"}, "/", "users/pk/hello/world"},
-		{"custom sep colon", "users", []string{"a", "b"}, ":", "users/pk/a:b"},
-		{"empty parts", "users", []string{""}, "|", "users/pk/"},
+		{"single part", "users", []string{"abc"}, "/", "users.pk.abc"},
+		{"composite", "users", []string{"a", "b"}, "/", "users.pk.a/b"},
+		{"underscore", "users", []string{"a_b"}, "/", "users.pk.a__b"},
+		{"pipe", "users", []string{"a|b"}, "/", "users.pk.a_x7cb"},
+		{"slash", "users", []string{"a/b"}, "/", "users.pk.a_x2fb"},
+		{"star", "users", []string{"a*b"}, "/", "users.pk.a_x2ab"},
+		{"greater", "users", []string{"a>b"}, "/", "users.pk.a_x3eb"},
+		{"double underscore", "users", []string{"a__b"}, "/", "users.pk.a____b"},
+		{"custom sep dash", "users", []string{"hello", "world"}, "-", "users.pk.hello-world"},
+		{"empty part", "users", []string{""}, "/", "users.pk._e"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,14 +177,6 @@ func TestBuildPKKey(t *testing.T) {
 				t.Errorf("BuildPKKey(%q, %v, %q) = %q, want %q", tt.viewName, tt.pkParts, tt.separator, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPKKey_BackwardCompat(t *testing.T) {
-	result := PKKey("users", "abc123")
-	expected := "users/pk/abc123"
-	if result != expected {
-		t.Errorf("PKKey backward compat: got %q, want %q", result, expected)
 	}
 }
 
@@ -233,18 +198,16 @@ func TestBuildPKKey_EscapesInvalidKeyCharacters(t *testing.T) {
 		value string
 		want  string
 	}{
-		{"alice@example.com", "users/pk/alice_x40example.com"},
-		{"a b", "users/pk/a_x20b"},
-		{"2026-10-17T12:00:00Z", "users/pk/2026-10-17T12_x3a00_x3a00Z"},
-		{"zażółć", "users/pk/za_xc5_xbc_xc3_xb3_xc5_x82_xc4_x87"},
-		{"1e+21", "users/pk/1e_x2b21"},
-		{"a.", "users/pk/a_x2e"},     // NATS rejects a trailing '.'
-		{"a..b", "users/pk/a_x2e.b"}, // NATS drops empty tokens
-		{"...", "users/pk/_x2e_x2e_x2e"},
-		{".a", "users/pk/.a"}, // a leading '.' is fine after "/pk/"
-		{"a.b", "users/pk/a.b"},
-		{"user-001", "users/pk/user-001"},
-		{"k=v", "users/pk/k=v"},
+		{"alice@example.com", "users.pk.alice_x40example_x2ecom"},
+		{"a b", "users.pk.a_x20b"},
+		{"2026-10-17T12:00:00Z", "users.pk.2026-10-17T12_x3a00_x3a00Z"},
+		{"zażółć", "users.pk.za_xc5_xbc_xc3_xb3_xc5_x82_xc4_x87"},
+		{"1e+21", "users.pk.1e_x2b21"},
+		{"a.", "users.pk.a_x2e"},
+		{"a..b", "users.pk.a_x2e_x2eb"},
+		{".a", "users.pk._x2ea"},
+		{"user-001", "users.pk.user-001"},
+		{"k=v", "users.pk.k=v"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {
@@ -264,14 +227,14 @@ func TestBuildPKKey_CompositeSeparatorEscaping(t *testing.T) {
 		sep   string
 		want  string
 	}{
-		{"dash in first part", []string{"globex-sales", "widget"}, "-", "t/pk/globex_x2dsales-widget"},
-		{"dash in second part", []string{"globex", "sales-widget"}, "-", "t/pk/globex-sales_x2dwidget"},
-		{"dot separator", []string{"a.b", "c"}, ".", "t/pk/a_x2eb.c"},
-		{"dot separator, empty last", []string{"a", ""}, ".", "t/pk/a._e"},
-		{"dot separator, empty first", []string{"", "b"}, ".", "t/pk/_e.b"},
-		{"letter separator", []string{"axb", "c"}, "x", "t/pk/a_x78bxc"},
-		{"empty parts with slash", []string{"", ""}, "/", "t/pk//"},
-		{"single part ignores separator", []string{"a-b"}, "-", "t/pk/a-b"},
+		{"dash in first part", []string{"globex-sales", "widget"}, "-", "t.pk.globex_x2dsales-widget"},
+		{"dash in second part", []string{"globex", "sales-widget"}, "-", "t.pk.globex-sales_x2dwidget"},
+		{"dot separator", []string{"a.b", "c"}, ".", "t.pk.a_x2eb.c"},
+		{"dot separator, empty last", []string{"a", ""}, ".", "t.pk.a._e"},
+		{"dot separator, empty first", []string{"", "b"}, ".", "t.pk._e.b"},
+		{"letter separator", []string{"axb", "c"}, "x", "t.pk.a_x78bxc"},
+		{"empty parts with slash", []string{"", ""}, "/", "t.pk._e/_e"},
+		{"single part ignores separator", []string{"a-b"}, "-", "t.pk.a-b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,8 +251,11 @@ var validKVKey = regexp.MustCompile(`^[-/_=.a-zA-Z0-9]+$`)
 
 func checkValidKey(t *testing.T, key string, parts []string) {
 	t.Helper()
-	if !validKVKey.MatchString(key) || strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
+	if !validKVKey.MatchString(key) || slices.Contains(strings.Split(key, "."), "") {
 		t.Fatalf("parts %q encode to invalid KV key %q", parts, key)
+	}
+	if !strings.HasPrefix(key, "v.pk.") {
+		t.Fatalf("parts %q encode to %q, outside the view's key space", parts, key)
 	}
 }
 
@@ -444,5 +410,149 @@ func TestOpenBucket_NotFound(t *testing.T) {
 	}
 	if _, err := js.KeyValue(ctx, DefaultBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
 		t.Errorf("OpenBucket created the bucket: %v", err)
+	}
+}
+
+// TestFormatPKValue_NumbersAreCanonical verifies that every spelling of the
+// same number maps to one key component, whichever path produced it (WR-06).
+func TestFormatPKValue_NumbersAreCanonical(t *testing.T) {
+	tests := []struct {
+		in   any
+		want string
+	}{
+		{json.Number("1"), "1"},
+		{json.Number("1.0"), "1"},
+		{json.Number("1e0"), "1"},
+		{json.Number("10e-1"), "1"},
+		{json.Number("1e3"), "1000"},
+		{json.Number("1E+3"), "1000"},
+		{json.Number("0.000001"), "0.000001"},
+		{json.Number("1e-6"), "0.000001"},
+		{json.Number("-0"), "0"},
+		{json.Number("-0.0e5"), "0"},
+		{json.Number("-1.50e3"), "-1500"},
+		{json.Number("12.340"), "12.34"},
+		{json.Number("1e21"), "1000000000000000000000"},
+		{json.Number("9007199254740993"), "9007199254740993"},
+		{json.Number("123456789012345678901234567890.5"), "123456789012345678901234567890.5"},
+		{int64(1000), "1000"},
+		{int64(-7), "-7"},
+		{float64(1), "1"},
+		{float64(1e21), "1000000000000000000000"},
+		{float64(0.000001), "0.000001"},
+		{float64(-2.5), "-2.5"},
+		{"1.0", "1.0"}, // strings are never reinterpreted
+		{true, "true"},
+		{false, "false"},
+		{time.Date(2026, 10, 17, 12, 0, 0, 5, time.UTC), "2026-10-17T12:00:00.000000005Z"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%T(%v)", tt.in, tt.in), func(t *testing.T) {
+			got, err := FormatPKValue(tt.in)
+			if err != nil {
+				t.Fatalf("FormatPKValue(%v) error: %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Errorf("FormatPKValue(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFormatPKValue_Rejects verifies that values with no key form are
+// reported rather than encoded as text like "<nil>" (WR-06).
+func TestFormatPKValue_Rejects(t *testing.T) {
+	for _, in := range []any{nil, math.NaN(), math.Inf(1), json.Number("1e100000"), json.Number("1e-100000"), json.Number("abc"), json.Number(""), json.Number("1e"), []any{1}} {
+		if got, err := FormatPKValue(in); !errors.Is(err, ErrInvalidPKValue) {
+			t.Errorf("FormatPKValue(%v) = %q, %v; want ErrInvalidPKValue", in, got, err)
+		}
+	}
+}
+
+// TestPKFilter_SelectsOnlyOneView verifies that the server-side watch filter
+// returns one view's rows and nothing from other views or schemas (PF-01).
+func TestPKFilter_SelectsOnlyOneView(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	kvb, err := InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	keys := []string{
+		BuildPKKey("users", []string{"a"}, "/"),
+		BuildPKKey("users", []string{"b.c", "d"}, "."),
+		BuildPKKey("users_archive", []string{"a"}, "/"),
+		BuildPKKey("user", []string{"a"}, "/"),
+		SchemaKey("users"),
+	}
+	for _, key := range keys {
+		if _, err := kvb.Put(ctx, key, []byte(`{}`)); err != nil {
+			t.Fatalf("Put(%q) failed: %v", key, err)
+		}
+	}
+
+	lister, err := kvb.ListKeysFiltered(ctx, PKFilter("users"))
+	if err != nil {
+		t.Fatalf("ListKeysFiltered failed: %v", err)
+	}
+	var got []string
+	for key := range lister.Keys() {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	want := []string{keys[0], keys[1]}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("keys matching %q = %q, want %q", PKFilter("users"), got, want)
+	}
+}
+
+// TestPurgeView_RemovesBothLayouts verifies that PurgeView deletes a view's
+// rows and schema in the current and the original key layout, and leaves
+// other views alone (WR-09).
+func TestPurgeView_RemovesBothLayouts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	kvb, err := InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	purged := []string{BuildPKKey("users", []string{"a"}, "/"), SchemaKey("users"), "users/pk/a", "users/meta/schema"}
+	kept := []string{BuildPKKey("users_archive", []string{"a"}, "/"), "users_archive/pk/a", SchemaKey("orders")}
+	for _, key := range append(slices.Clone(purged), kept...) {
+		if _, err := kvb.Put(ctx, key, []byte(`{}`)); err != nil {
+			t.Fatalf("Put(%q) failed: %v", key, err)
+		}
+	}
+
+	legacy, err := PurgeView(ctx, js, kvb, "users")
+	if err != nil {
+		t.Fatalf("PurgeView failed: %v", err)
+	}
+	if legacy != 2 {
+		t.Errorf("PurgeView removed %d layout-1 keys, want 2", legacy)
+	}
+	for _, key := range purged {
+		if _, err := kvb.Get(ctx, key); !errors.Is(err, jetstream.ErrKeyNotFound) {
+			t.Errorf("Get(%q) after purge: %v, want ErrKeyNotFound", key, err)
+		}
+	}
+	for _, key := range kept {
+		if _, err := kvb.Get(ctx, key); err != nil {
+			t.Errorf("Get(%q) after purging another view: %v", key, err)
+		}
+	}
+
+	// HasRows sees only the view's own rows in the current layout.
+	for view, want := range map[string]bool{"users": false, "users_archive": true, "orders": false} {
+		if got, err := HasRows(ctx, js, view); err != nil || got != want {
+			t.Errorf("HasRows(%q) = %v, %v; want %v", view, got, err, want)
+		}
 	}
 }

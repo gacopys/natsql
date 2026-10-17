@@ -7,6 +7,28 @@ on:
     branches: [master]
 
 jobs:
+  # Fails when an examples/NN-* directory is missing from the matrix below,
+  # so a new example can't silently go unrun.
+  matrix-complete:
+    name: Every example is run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the matrix lists every example
+        run: |
+          missing=0
+          for dir in examples/[0-9][0-9]-*/; do
+            name=$(basename "$dir")
+            if ! grep -qE "^ +- ${name}\$" .github/workflows/examples.yml; then
+              echo "::error file=.github/workflows/examples.yml::examples/${name} is not in the matrix"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  # Each example checks its own results and exits non-zero on a wrong one;
+  # examples/run.sh knows how to run the special ones (the CLI server, the
+  # benchmark on a small dataset).
   example:
     strategy:
       matrix:
@@ -16,6 +38,8 @@ jobs:
           - 03-malformed-events
           - 04-multiple-views
           - 05-library-embed
+          - 06-cli-server
+          - 07-perf-benchmark
           - 08-where-operators
           - 09-key-separator
           - 10-source-subject
@@ -31,29 +55,11 @@ jobs:
       fail-fast: false
     name: Run ${{ matrix.example }}
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version-file: examples/${{ matrix.example }}/go.mod
+          go-version-file: go.mod
       - name: Run
-        run: go run .
-        working-directory: examples/${{ matrix.example }}
-
-  build-only:
-    strategy:
-      matrix:
-        example:
-          - 07-perf-benchmark
-      fail-fast: false
-    name: Build ${{ matrix.example }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: examples/${{ matrix.example }}/go.mod
-      - name: Build
-        run: go build .
-        working-directory: examples/${{ matrix.example }}
+        run: examples/run.sh ${{ matrix.example }}

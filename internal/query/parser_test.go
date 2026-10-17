@@ -495,22 +495,25 @@ func TestParse_NonAliasedFrom(t *testing.T) {
 // literalToGo unit tests
 // ---------------------------------------------------------------------------
 
-func TestLiteralToGo_IntParseError(_ *testing.T) {
-	// A very large int literal that ParseInt can't handle falls back to the raw value
-	_ = literalToGo(&sqlparser.Literal{Type: sqlparser.IntVal, Val: "999999999999999999999999"})
+func TestLiteralToGo_IntParseError(t *testing.T) {
+	// An int literal beyond int64 keeps its exact digits (WR-06).
+	v := literalToGo(&sqlparser.Literal{Type: sqlparser.IntVal, Val: "999999999999999999999999"})
+	if v != json.Number("999999999999999999999999") {
+		t.Errorf("expected json.Number with the exact digits, got %T %v", v, v)
+	}
 }
 
 func TestLiteralToGo_FloatVal(t *testing.T) {
 	v := literalToGo(&sqlparser.Literal{Type: sqlparser.FloatVal, Val: "3.14"})
-	if v != float64(3.14) {
-		t.Errorf("expected 3.14, got %v", v)
+	if v != json.Number("3.14") {
+		t.Errorf("expected json.Number 3.14, got %T %v", v, v)
 	}
 }
 
 func TestLiteralToGo_DecimalVal(t *testing.T) {
 	v := literalToGo(&sqlparser.Literal{Type: sqlparser.DecimalVal, Val: "10.5"})
-	if v != float64(10.5) {
-		t.Errorf("expected 10.5, got %v", v)
+	if v != json.Number("10.5") {
+		t.Errorf("expected json.Number 10.5, got %T %v", v, v)
 	}
 }
 

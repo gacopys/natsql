@@ -56,7 +56,7 @@ paths:
                 sqlError:
                   value:
                     results: null
-                    error: "unknown view: users"
+                    error: 'view "users" not found'
         "400":
           description: The request body was not valid JSON or contained trailing data.
           content:
@@ -69,8 +69,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryResult"
+  /healthz:
+    get:
+      operationId: GetHealth
+      summary: Liveness probe.
+      description: >
+        Returns 200 while the process is serving HTTP. It doesn't check views
+        or NATS; use /readyz for that.
+      responses:
+        "200":
+          description: The server is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineStatus"
+  /readyz:
+    get:
+      operationId: GetReadiness
+      summary: Readiness probe.
+      description: >
+        Returns 200 when the engine is started and every view's materializer
+        is consuming, and 503 otherwise (a view is starting, restarting after
+        a failure, or has failed). The body reports each view's state and
+        counters either way.
+      responses:
+        "200":
+          description: The engine is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineStatus"
+        "503":
+          description: The engine is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineStatus"
 components:
   schemas:
+    EngineStatus:
+      type: object
+      description: >
+        Engine status: `ready`, `started`, query counters and a `view_status`
+        entry per view with its `state` (starting, running, restarting,
+        failed, stopped), restart count, event counters and last error. See
+        the Go `Stats` type for every field.
+      additionalProperties: true
     QueryRequest:
       type: object
       description: The JSON body for POST /api/v1/query.

@@ -3,7 +3,7 @@ package query
 import (
 	"fmt"
 
-	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/kv"
 )
 
 // Validate checks a parsed query against a view schema.

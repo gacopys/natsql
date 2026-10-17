@@ -18,8 +18,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql/internal/cfg"
-	"github.com/gacopys/natsql/internal/kv"
+	natsql "github.com/gacopys/natsql/v2/internal/cfg"
+	"github.com/gacopys/natsql/v2/internal/kv"
 )
 
 func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
@@ -64,7 +64,7 @@ func TestMaterializer_ValidEventEndToEnd(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -161,7 +161,7 @@ func TestMaterializer_MalformedEventGoesToDLQ(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -231,7 +231,7 @@ func TestMaterializer_ContinuesAfterMalformedEvent(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(1 * time.Second) // allow consumer setup
@@ -313,7 +313,7 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow setup
@@ -328,74 +328,6 @@ func TestMaterializer_ContextCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("materializer did not shut down within 5 seconds after context cancellation")
-	}
-}
-
-func TestMaterializer_SchemaStoredInKV(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	nc, js := startEmbeddedNATS(t)
-	defer nc.Close()
-
-	streamName := "TEST_MAT_SCHEMA"
-	createStream(t, ctx, js, streamName)
-
-	kvb, err := kv.InitBucket(ctx, js, 1)
-	if err != nil {
-		t.Fatalf("InitBucket failed: %v", err)
-	}
-
-	if _, err := EnsureDLQStream(ctx, js); err != nil {
-		t.Fatalf("EnsureDLQStream failed: %v", err)
-	}
-
-	viewCfg := &natsql.ViewConfig{
-		Name:         "schema_test",
-		SourceStream: streamName,
-		KeyFields:    []string{"id"},
-		Columns: []natsql.ColumnConfig{
-			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
-			{Name: "name", From: "name", Type: natsql.ColumnTypeString},
-		},
-		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
-	}
-
-	matCtx, matCancel := context.WithCancel(context.Background())
-	defer matCancel()
-
-	logger := slog.New(slog.DiscardHandler)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
-	}()
-
-	time.Sleep(500 * time.Millisecond) // allow setup to store schema
-
-	// Verify schema is stored in KV
-	schema, err := kv.LoadSchema(ctx, kvb, "schema_test")
-	if err != nil {
-		t.Fatalf("LoadSchema failed: %v", err)
-	}
-	if schema == nil {
-		t.Fatal("schema was not stored in KV")
-	}
-	if schema.Name != "schema_test" {
-		t.Errorf("schema.Name = %q, want %q", schema.Name, "schema_test")
-	}
-	if len(schema.Columns) != 2 {
-		t.Errorf("schema.Columns has %d columns, want 2", len(schema.Columns))
-	}
-	if schema.Version != 1 {
-		t.Errorf("schema.Version = %d, want 1", schema.Version)
-	}
-
-	// Clean shutdown
-	matCancel()
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("materializer did not shut down within 5 seconds")
 	}
 }
 
@@ -461,7 +393,7 @@ func TestMaterializer_ValidEventWithNestedFields(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(500 * time.Millisecond)
@@ -547,7 +479,7 @@ func TestMaterializerDrain(t *testing.T) {
 	defer matCancel()
 
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, drainCh)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{Drain: drainCh})
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -632,7 +564,7 @@ func TestSequentialProcessing_SingleGoroutine(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -715,7 +647,7 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
 	time.Sleep(500 * time.Millisecond) // allow consumer setup
@@ -764,11 +696,15 @@ func TestSequentialProcessing_StreamOrder(t *testing.T) {
 	}
 }
 
-// TestSequentialProcessing_HeartbeatIndependent verifies that the heartbeat goroutine
-// continues to log events after the worker pool is removed.
+// TestSequentialProcessing_HeartbeatIndependent verifies that the heartbeat
+// keeps logging progress while events are processed sequentially (TS-01).
 func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	saved := heartbeatInterval
+	heartbeatInterval = 50 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = saved })
 
 	nc, js := startEmbeddedNATS(t)
 	defer nc.Close()
@@ -781,10 +717,6 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		t.Fatalf("InitBucket failed: %v", err)
 	}
 
-	if _, err := EnsureDLQStream(ctx, js); err != nil {
-		t.Fatalf("EnsureDLQStream failed: %v", err)
-	}
-
 	viewCfg := &natsql.ViewConfig{
 		Name:         "seq_heartbeat_test",
 		SourceStream: streamName,
@@ -792,65 +724,51 @@ func TestSequentialProcessing_HeartbeatIndependent(t *testing.T) {
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-		Consumer: natsql.ConsumerConfig{MaxAckPending: 10, MaxDeliver: 5, AckWaitSeconds: 10},
 	}
 
-	// Capture log output
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logs := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	matCtx, matCancel := context.WithCancel(context.Background())
-	defer matCancel()
-
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(matCtx, js, viewCfg, kvb, logger, nil)
+		errCh <- Run(matCtx, js, viewCfg, kvb, logger, Options{})
 	}()
 
-	time.Sleep(500 * time.Millisecond) // allow consumer setup
-
-	// Publish a few events
-	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "hb1"}`)); err != nil {
-		t.Fatalf("Publish failed: %v", err)
-	}
-	if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "hb2"}`)); err != nil {
-		t.Fatalf("Publish failed: %v", err)
-	}
-
-	// Verify events were processed. Poll instead of a fixed sleep so the
-	// test is robust under parallel test load (go test ./...) where
-	// materialization latency is variable.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		hb1, err1 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb1"}, "|"))
-		hb2, err2 := kvb.Get(ctx, kv.BuildPKKey("seq_heartbeat_test", []string{"hb2"}, "|"))
-		if err1 == nil && hb1 != nil && err2 == nil && hb2 != nil {
-			break
+	for _, id := range []string{"hb1", "hb2"} {
+		if _, err := js.Publish(ctx, streamName+".events", []byte(`{"id": "`+id+`"}`)); err != nil {
+			t.Fatalf("Publish failed: %v", err)
 		}
-		if time.Now().After(deadline) {
-			if err1 != nil {
-				t.Fatalf("Get(%q) failed: %v", "hb1", err1)
-			}
-			if err2 != nil {
-				t.Fatalf("Get(%q) failed: %v", "hb2", err2)
-			}
-			t.Fatal("events were not materialized within 15s")
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Verify heartbeat logged (heartbeat interval is 60s, so we won't see one during the test)
-	// Instead, verify the materializer doesn't panic and processes events correctly
-	logOutput := logBuf.String()
-	t.Logf("Log output contains heartbeat:\n%s", logOutput)
+	waitFor(t, 15*time.Second, "a heartbeat reporting both events", func() bool {
+		return strings.Contains(logs.String(), `msg="materializer heartbeat" view=seq_heartbeat_test events_processed=2`)
+	})
 
-	// Clean shutdown
 	matCancel()
 	select {
 	case <-errCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("materializer did not shut down within 5 seconds")
 	}
+}
+
+// syncBuffer is a bytes.Buffer safe for a logger and a test to share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // --- Error classification tests ---
@@ -925,32 +843,38 @@ func TestRedeliveryDelay(t *testing.T) {
 	}
 }
 
-func newProcessEventMapper(t *testing.T) *Mapper {
+// newTestRunner returns a viewRunner for view "test_view" that writes through
+// kvb and publishes DLQ messages through js.
+func newTestRunner(t *testing.T, js jetstream.JetStream, kvb jetstream.KeyValue, consumer natsql.ConsumerConfig) *viewRunner {
 	t.Helper()
-	mapper, err := NewMapper(&natsql.ViewConfig{
-		Name:      "test",
+	viewCfg := &natsql.ViewConfig{
+		Name:      "test_view",
 		KeyFields: []string{"id"},
 		Columns: []natsql.ColumnConfig{
 			{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true},
 		},
-	})
+		Consumer: consumer,
+	}
+	mapper, err := NewMapper(viewCfg)
 	if err != nil {
 		t.Fatalf("NewMapper failed: %v", err)
 	}
-	return mapper
+	return &viewRunner{
+		js:     js,
+		view:   viewCfg,
+		mapper: mapper,
+		writer: NewWriter(kvb, viewCfg.Name, "/", Source{}),
+		logger: slog.New(slog.DiscardHandler),
+		stats:  &Stats{},
+	}
 }
 
 func TestProcessEvent_TransientWriteError_NAKsWithBackoff(t *testing.T) {
-	ctx := context.Background()
-	logger := slog.New(slog.DiscardHandler)
-
 	js := &fakeJS{}
-	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
-	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	r := newTestRunner(t, js, &fakeKV{writeErr: nats.ErrNoResponders}, natsql.ConsumerConfig{})
 	msg := &fakeMsg{seq: 1, numDelivered: 2, data: []byte(`{"id": "1"}`)}
-	viewCfg := &natsql.ViewConfig{Name: "test_view"}
 
-	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+	r.processEvent(context.Background(), msg)
 
 	if !msg.nakked {
 		t.Error("expected the event to be NAK'd for a transient write error")
@@ -970,16 +894,11 @@ func TestProcessEvent_TransientWriteError_NAKsWithBackoff(t *testing.T) {
 // last delivery attempt is dead-lettered instead of NAK'd, since JetStream
 // would not redeliver it.
 func TestProcessEvent_TransientWriteError_FinalDeliveryDLQ(t *testing.T) {
-	ctx := context.Background()
-	logger := slog.New(slog.DiscardHandler)
-
 	js := &fakeJS{}
-	kvMock := &fakeKV{writeErr: nats.ErrNoResponders}
-	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	r := newTestRunner(t, js, &fakeKV{writeErr: nats.ErrNoResponders}, natsql.ConsumerConfig{MaxDeliver: 3})
 	msg := &fakeMsg{seq: 1, numDelivered: 3, data: []byte(`{"id": "1"}`)}
-	viewCfg := &natsql.ViewConfig{Name: "test_view", Consumer: natsql.ConsumerConfig{MaxDeliver: 3}}
 
-	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+	r.processEvent(context.Background(), msg)
 
 	if !js.publishCalled {
 		t.Error("expected DLQ publish on the final delivery attempt")
@@ -993,16 +912,11 @@ func TestProcessEvent_TransientWriteError_FinalDeliveryDLQ(t *testing.T) {
 }
 
 func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
-	ctx := context.Background()
-	logger := slog.New(slog.DiscardHandler)
-
 	js := &fakeJS{}
-	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
-	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	r := newTestRunner(t, js, &fakeKV{writeErr: jetstream.ErrInvalidKey}, natsql.ConsumerConfig{})
 	msg := &fakeMsg{seq: 1, numDelivered: 1, data: []byte(`{"id": "1"}`)}
-	viewCfg := &natsql.ViewConfig{Name: "test_view"}
 
-	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+	r.processEvent(context.Background(), msg)
 
 	if !js.publishCalled {
 		t.Error("expected DLQ publish for terminal write error")
@@ -1016,22 +930,53 @@ func TestProcessEvent_TerminalWriteError_DLQ(t *testing.T) {
 }
 
 func TestProcessEvent_DLQPublishFailure_NAKsWithBackoff(t *testing.T) {
-	ctx := context.Background()
-	logger := slog.New(slog.DiscardHandler)
-
 	js := &fakeJS{publishErr: nats.ErrNoResponders}
-	kvMock := &fakeKV{writeErr: jetstream.ErrInvalidKey}
-	writer := NewWriter(kvMock, "test_view", "|", Source{})
+	r := newTestRunner(t, js, &fakeKV{writeErr: jetstream.ErrInvalidKey}, natsql.ConsumerConfig{})
 	msg := &fakeMsg{seq: 1, numDelivered: 1, data: []byte(`{"id": "1"}`)}
-	viewCfg := &natsql.ViewConfig{Name: "test_view"}
 
-	processEvent(ctx, js, newProcessEventMapper(t), writer, msg, viewCfg, logger)
+	r.processEvent(context.Background(), msg)
 
 	if msg.acked {
 		t.Error("expected no ack when the DLQ publish failed")
 	}
 	if !msg.nakked || msg.nakDelay != 250*time.Millisecond {
 		t.Errorf("expected NAK with 250ms backoff, got nakked=%v delay=%v", msg.nakked, msg.nakDelay)
+	}
+}
+
+// TestProcessEvent_DLQPublishFailureOnFinalAttempt_NAKs verifies that an
+// event whose retry budget is used up is still NAK'd, not dropped, when the
+// DLQ is down too: the consumer redelivers without limit, so the DLQ publish
+// is retried (WR-07).
+func TestProcessEvent_DLQPublishFailureOnFinalAttempt_NAKs(t *testing.T) {
+	js := &fakeJS{publishErr: nats.ErrNoResponders}
+	r := newTestRunner(t, js, &fakeKV{writeErr: nats.ErrNoResponders}, natsql.ConsumerConfig{MaxDeliver: 3})
+	msg := &fakeMsg{seq: 1, numDelivered: 7, data: []byte(`{"id": "1"}`)}
+
+	r.processEvent(context.Background(), msg)
+
+	if !js.publishCalled {
+		t.Error("expected a DLQ publish attempt once the retry budget is used")
+	}
+	if msg.acked || !msg.nakked {
+		t.Errorf("expected a NAK and no ack, got acked=%v nakked=%v", msg.acked, msg.nakked)
+	}
+}
+
+// TestProcessEvent_UnlimitedRetryBudget verifies that max_deliver -1 keeps
+// retrying transient failures instead of dead-lettering them (WR-07).
+func TestProcessEvent_UnlimitedRetryBudget(t *testing.T) {
+	js := &fakeJS{}
+	r := newTestRunner(t, js, &fakeKV{writeErr: nats.ErrNoResponders}, natsql.ConsumerConfig{MaxDeliver: -1})
+	msg := &fakeMsg{seq: 1, numDelivered: 1000, data: []byte(`{"id": "1"}`)}
+
+	r.processEvent(context.Background(), msg)
+
+	if js.publishCalled || msg.acked || !msg.nakked {
+		t.Errorf("expected a NAK and no DLQ publish, got published=%v acked=%v nakked=%v", js.publishCalled, msg.acked, msg.nakked)
+	}
+	if got := r.stats.Snapshot(); got.Retried != 1 || got.LastError == "" {
+		t.Errorf("stats = %+v, want 1 retry and the last error recorded", got)
 	}
 }
 
@@ -1149,7 +1094,7 @@ type failingWritesKV struct {
 }
 
 func (f *failingWritesKV) fail(key string) bool {
-	if strings.Contains(key, "/pk/") && f.shouldFail(key) {
+	if strings.Contains(key, ".pk.") && f.shouldFail(key) {
 		f.failures.Add(1)
 		return true
 	}
@@ -1175,7 +1120,7 @@ func runMaterializer(t *testing.T, js jetstream.JetStream, viewCfg *natsql.ViewC
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, js, viewCfg, bucket, slog.New(slog.DiscardHandler), nil)
+		done <- Run(ctx, js, viewCfg, bucket, slog.New(slog.DiscardHandler), Options{})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1328,5 +1273,216 @@ func TestEnsureDLQStream_PreservesExistingConfig(t *testing.T) {
 	}
 	if info.Config.MaxAge != 30*24*time.Hour {
 		t.Errorf("DLQ MaxAge = %v, want 720h (operator config was overwritten)", info.Config.MaxAge)
+	}
+}
+
+// TestPublishToDLQ_OversizedEventKeepsReference verifies that an event too
+// large to embed in a DLQ envelope is still dead-lettered, with a reference
+// to its source instead of the payload (WR-08).
+func TestPublishToDLQ_OversizedEventKeepsReference(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	nc, js := startEmbeddedNATS(t)
+	dlq, err := EnsureDLQStream(ctx, js)
+	if err != nil {
+		t.Fatalf("EnsureDLQStream failed: %v", err)
+	}
+
+	body := bytes.Repeat([]byte("x"), int(nc.MaxPayload())*7/8) // fits raw, not base64-encoded
+	msg := &fakeMsg{data: body, seq: 42, numDelivered: 1}
+	if err := publishToDLQ(ctx, js, msg, "review", errors.New("bad JSON")); err != nil {
+		t.Fatalf("publishToDLQ failed for an event that fits the max payload: %v", err)
+	}
+
+	stored, err := dlq.GetLastMsgForSubject(ctx, DLQSubject)
+	if err != nil {
+		t.Fatalf("reading DLQ failed: %v", err)
+	}
+	var envelope dlqEnvelope
+	if err := json.Unmarshal(stored.Data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope failed: %v", err)
+	}
+	if !envelope.PayloadOmitted || envelope.OriginalMessageB64 != "" {
+		t.Errorf("payload_omitted=%v, payload length %d; want the payload left out", envelope.PayloadOmitted, len(envelope.OriginalMessageB64))
+	}
+	if envelope.OriginalSize != len(body) || envelope.OriginalSequence != 42 || envelope.Error != "bad JSON" {
+		t.Errorf("envelope = %+v, want size %d, sequence 42 and the error", envelope, len(body))
+	}
+}
+
+// TestSetupConsumer_ServerNeverGivesUp verifies that the durable consumer
+// redelivers without limit, including one created by an older version with
+// MaxDeliver 10, so an event can't be dropped by the server (WR-07).
+func TestSetupConsumer_ServerNeverGivesUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	createStream(t, ctx, js, "TEST_MAXDELIVER")
+	stream, err := js.Stream(ctx, "TEST_MAXDELIVER")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+	if _, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:    ConsumerName("v"),
+		AckPolicy:  jetstream.AckExplicitPolicy,
+		MaxDeliver: 10,
+	}); err != nil {
+		t.Fatalf("creating old consumer failed: %v", err)
+	}
+
+	cons, err := SetupConsumer(ctx, js, "TEST_MAXDELIVER", "v", "", natsql.ConsumerConfig{MaxDeliver: 3})
+	if err != nil {
+		t.Fatalf("SetupConsumer failed: %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info failed: %v", err)
+	}
+	if info.Config.MaxDeliver != -1 {
+		t.Errorf("consumer MaxDeliver = %d, want -1", info.Config.MaxDeliver)
+	}
+}
+
+// startRun starts Run on a fresh one-column view over streamName and returns
+// its result channel.
+func startRun(ctx context.Context, t *testing.T, js jetstream.JetStream, streamName string, opts Options) <-chan error {
+	t.Helper()
+	kvb, err := kv.InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+	viewCfg := &natsql.ViewConfig{
+		Name:         "run_test",
+		SourceStream: streamName,
+		KeyFields:    []string{"id"},
+		Columns:      []natsql.ColumnConfig{{Name: "id", From: "id", Type: natsql.ColumnTypeString, PrimaryKey: true}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, js, viewCfg, kvb, slog.New(slog.DiscardHandler), opts) }()
+	return done
+}
+
+func waitRun(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10s")
+		return nil
+	}
+}
+
+// TestRun_ReadyAndCleanCancel verifies that Run reports readiness once it is
+// consuming, and that canceling it removes its pull subscription (LC-03,
+// LC-05).
+func TestRun_ReadyAndCleanCancel(t *testing.T) {
+	nc, js := startEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	createStream(t, ctx, js, "TEST_RUN_READY")
+	if _, err := kv.InitBucket(ctx, js, 1); err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+	before := nc.NumSubscriptions()
+
+	ready := make(chan struct{})
+	done := startRun(ctx, t, js, "TEST_RUN_READY", Options{OnReady: func() { close(ready) }})
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("Run returned before becoming ready: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never reported readiness")
+	}
+
+	cancel()
+	if err := waitRun(t, done); !errors.Is(err, context.Canceled) {
+		t.Errorf("Run after cancel = %v, want context.Canceled", err)
+	}
+	waitFor(t, 5*time.Second, "the pull subscription to be removed", func() bool {
+		return nc.NumSubscriptions() <= before
+	})
+}
+
+// TestRun_SetupFailureNotReady verifies that a view whose consumer can't be
+// created fails without reporting readiness (LC-03).
+func TestRun_SetupFailureNotReady(t *testing.T) {
+	_, js := startEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var ready atomic.Bool
+	done := startRun(ctx, t, js, "MISSING_STREAM", Options{OnReady: func() { ready.Store(true) }})
+	if err := waitRun(t, done); err == nil {
+		t.Fatal("Run on a missing stream returned nil")
+	}
+	if ready.Load() {
+		t.Error("Run reported readiness before failing setup")
+	}
+}
+
+// TestRun_DrainReturnsNil verifies that a drain is a clean stop.
+func TestRun_DrainReturnsNil(t *testing.T) {
+	_, js := startEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	createStream(t, ctx, js, "TEST_RUN_DRAIN")
+
+	drain := make(chan struct{})
+	ready := make(chan struct{})
+	done := startRun(ctx, t, js, "TEST_RUN_DRAIN", Options{Drain: drain, OnReady: func() { close(ready) }})
+	<-ready
+	close(drain)
+	if err := waitRun(t, done); err != nil {
+		t.Errorf("Run after drain = %v, want nil", err)
+	}
+}
+
+// TestRun_PanicReturnsError verifies that a recovered panic is reported as
+// an error instead of looking like a clean stop (LC-03).
+func TestRun_PanicReturnsError(t *testing.T) {
+	_, js := startEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	createStream(t, ctx, js, "TEST_RUN_PANIC")
+
+	testHookProcessGoroutine = func() { panic("injected") }
+	defer func() { testHookProcessGoroutine = nil }()
+
+	done := startRun(ctx, t, js, "TEST_RUN_PANIC", Options{})
+	if _, err := js.Publish(ctx, "TEST_RUN_PANIC.e", []byte(`{"id":"a"}`)); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+	if err := waitRun(t, done); err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("Run after a panic = %v, want a panic error", err)
+	}
+}
+
+// TestRun_ConnectionClosedReturnsError verifies that losing the connection
+// for good ends Run with an error instead of logging Next errors forever
+// (OP-02).
+func TestRun_ConnectionClosedReturnsError(t *testing.T) {
+	nc, js := startEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	createStream(t, ctx, js, "TEST_RUN_CLOSED")
+
+	ready := make(chan struct{})
+	done := startRun(ctx, t, js, "TEST_RUN_CLOSED", Options{OnReady: func() { close(ready) }})
+	<-ready
+	nc.Close()
+	if err := waitRun(t, done); !errors.Is(err, jetstream.ErrConnectionClosed) {
+		t.Errorf("Run after the connection closed = %v, want ErrConnectionClosed", err)
+	}
+}
+
+func TestNextErrorDelay(t *testing.T) {
+	for n, want := range map[int]time.Duration{1: 100 * time.Millisecond, 2: 200 * time.Millisecond, 6: 3200 * time.Millisecond, 7: 5 * time.Second, 100: 5 * time.Second} {
+		if got := nextErrorDelay(n); got != want {
+			t.Errorf("nextErrorDelay(%d) = %v, want %v", n, got, want)
+		}
 	}
 }

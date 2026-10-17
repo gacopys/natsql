@@ -8,8 +8,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/kv"
-	"github.com/gacopys/natsql/internal/testutil"
+	"github.com/gacopys/natsql/v2/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ func TestBuildPlanPKLookup(t *testing.T) {
 	if pkPlan.ViewName != "test_users" {
 		t.Errorf("ViewName = %q, want %q", pkPlan.ViewName, "test_users")
 	}
-	if len(pkPlan.PKParts) != 1 || pkPlan.PKParts[0] != "abc" {
-		t.Errorf("PKParts = %v, want %v", pkPlan.PKParts, []string{"abc"})
+	if len(pkPlan.Keys) != 1 || len(pkPlan.Keys[0]) != 1 || pkPlan.Keys[0][0] != "abc" {
+		t.Errorf("Keys = %v, want %v", pkPlan.Keys, [][]string{{"abc"}})
 	}
 	if pkPlan.Separator != "|" {
 		t.Errorf("Separator = %q, want %q", pkPlan.Separator, "|")
@@ -293,7 +293,7 @@ func TestPKLookupFound(t *testing.T) {
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PKParts:   []string{"u1"},
+		Keys:      [][]string{{"u1"}},
 		Separator: "|",
 		Columns:   nil, // all columns
 	}
@@ -325,7 +325,7 @@ func TestPKLookupNotFound(t *testing.T) {
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PKParts:   []string{"nonexistent"},
+		Keys:      [][]string{{"nonexistent"}},
 		Separator: "|",
 		Columns:   nil,
 	}
@@ -428,7 +428,7 @@ func TestProjectionSelectStar(t *testing.T) {
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PKParts:   []string{"u1"},
+		Keys:      [][]string{{"u1"}},
 		Separator: "|",
 		Columns:   nil, // SELECT *
 	}
@@ -461,7 +461,7 @@ func TestProjectionSelectCols(t *testing.T) {
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PKParts:   []string{"u1"},
+		Keys:      [][]string{{"u1"}},
 		Separator: "|",
 		Columns:   []string{"name", "age"},
 	}
@@ -497,7 +497,7 @@ func TestProjectionMissingCol(t *testing.T) {
 
 	plan := &PKLookupPlan{
 		ViewName:  "test_users",
-		PKParts:   []string{"u1"},
+		Keys:      [][]string{{"u1"}},
 		Separator: "|",
 		Columns:   []string{"nonexistent"},
 	}
@@ -557,7 +557,7 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	// SELECT * (Columns=nil) — should exclude _meta
 	plan := &PKLookupPlan{
 		ViewName:  testSchema.Name,
-		PKParts:   []string{"meta_test"},
+		Keys:      [][]string{{"meta_test"}},
 		Separator: testSchema.KeySeparator,
 		Columns:   nil, // SELECT *
 	}
@@ -586,7 +586,7 @@ func TestProjectionSelectStarExcludesMeta(t *testing.T) {
 	// Explicit column selection should still work unchanged (D-06)
 	plan2 := &PKLookupPlan{
 		ViewName:  testSchema.Name,
-		PKParts:   []string{"meta_test"},
+		Keys:      [][]string{{"meta_test"}},
 		Separator: testSchema.KeySeparator,
 		Columns:   []string{"name", "_meta"}, // explicit _meta selection
 	}
@@ -641,7 +641,7 @@ func TestLargeIntegerPrecision(t *testing.T) {
 	// Read back via PK lookup — value should be json.Number, not truncated float64
 	plan := &PKLookupPlan{
 		ViewName:  schema.Name,
-		PKParts:   []string{"big1"},
+		Keys:      [][]string{{"big1"}},
 		Separator: schema.KeySeparator,
 		Columns:   nil,
 	}
@@ -794,7 +794,7 @@ func TestPKEncoding_SpecialCharacters_WriteRead(t *testing.T) {
 	for _, sp := range specialPKs {
 		plan := &PKLookupPlan{
 			ViewName:  schema.Name,
-			PKParts:   sp.pkParts,
+			Keys:      [][]string{sp.pkParts},
 			Separator: schema.KeySeparator,
 			Columns:   nil,
 		}

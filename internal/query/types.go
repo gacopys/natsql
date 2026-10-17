@@ -33,7 +33,10 @@ type ValidatedQuery struct {
 	Select []string    // nil means "*"
 	From   string      // view name
 	Where  []Condition // AND-connected; non-nil for v1
-	Limit  int         // 0 = no limit
+	Limit  int         // row cap; 0 = no cap unless HasLimit is set
+	// HasLimit reports an explicit LIMIT clause, so "LIMIT 0" (no rows) is
+	// told apart from no LIMIT at all (QE-03).
+	HasLimit bool
 }
 
 // Plan is the interface for query execution plans.
@@ -41,21 +44,24 @@ type Plan interface {
 	Execute(ctx context.Context, kv jetstream.KeyValue) ([]map[string]any, error)
 }
 
-// PKLookupPlan is a direct primary key point lookup.
+// PKLookupPlan reads rows by primary key: one point lookup per candidate
+// key, which covers PK equality and PK IN lists (PF-01).
 type PKLookupPlan struct {
 	ViewName  string
-	PKParts   []string    // raw PK component values (not sanitized, not joined)
-	Separator string      // separator used to join PKParts
-	Columns   []string    // nil = all
-	Where     []Condition // non-PK conditions to apply as post-filter
+	Keys      [][]string  // candidate keys; each is the raw, canonical PK components (kv.FormatPKValue)
+	Separator string      // separator used to join each key's components
+	Columns   []string    // nil = every public field
+	Where     []Condition // all conditions, applied as a post-filter (CR-03)
+	Limit     int         // 0 = no limit
 }
 
-// FullScanPlan iterates all keys for a view, applies filters client-side.
+// FullScanPlan reads every row of a view, filtered on the server by key
+// prefix, and applies the WHERE conditions client-side.
 type FullScanPlan struct {
 	ViewName string
-	Columns  []string // nil = all
+	Columns  []string // nil = every public field
 	Where    []Condition
-	Limit    int
+	Limit    int // 0 = no limit
 }
 
 // EmptyPlan is returned when WHERE predicates are contradictory
@@ -67,8 +73,6 @@ type EmptyPlan struct {
 
 // Execute returns an empty result set with no KV I/O. Used when
 // contradictory predicates make the query impossible to satisfy.
-//
-
 func (p *EmptyPlan) Execute(_ context.Context, _ jetstream.KeyValue) ([]map[string]any, error) {
 	return []map[string]any{}, nil
 }

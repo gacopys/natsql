@@ -13,7 +13,7 @@ FROM view_name
 
 ### SELECT Clause
 
-- `SELECT *` — returns all schema-declared columns. Internal fields (prefixed with `_`) are excluded.
+- `SELECT *` — returns exactly the schema-declared columns, on every query plan. Internal fields (such as `_meta`) and fields outside the current schema are never returned.
 - `SELECT col1, col2` — returns only the specified columns. Column names are validated against the view schema.
 
 ### FROM Clause
@@ -22,18 +22,21 @@ FROM view_name
 
 ### WHERE Clause
 
-- Supports equality (`=`) and `IN` operators.
+- Supports equality (`=`), not-equal (`!=`, `<>`) and `IN` operators.
 - `WHERE pk_column = 'value'` — primary-key lookup (efficient, O(1) KV get).
-- `WHERE non_pk_column = 'value'` — full table scan over all KV keys.
+- `WHERE pk_column IN ('a', 'b')` — one primary-key lookup per value (up to 256 keys across all key fields; longer lists scan the view).
+- `WHERE non_pk_column = 'value'` — full scan of the view's rows (the server only sends this view's rows).
 - `WHERE pk_col = 'a' AND non_pk_col = 'b'` — PK narrows search, non-PK post-filters.
-- `WHERE col IN ('a', 'b')` — multi-value lookup (client-side expansion).
 - Multiple conditions joined with `AND`. OR is not supported.
-- Contradictory predicates (`WHERE id = 'a' AND id = 'b'`) return zero results.
+- Contradictory predicates (`WHERE id = 'a' AND id = 'b'`) and `pk_column = NULL` return zero results without reading storage.
+- Numeric primary keys match by value, not spelling: `WHERE id = 1.0`, `id = 1e0` and `id IN (1)` all find the row whose event had `"id": 1`.
+- A query interrupted by its timeout or by cancellation returns an error, never a partial result.
 
 ### LIMIT Clause
 
-- `LIMIT n` — returns at most `n` rows.
+- `LIMIT n` — returns at most `n` rows. `LIMIT 0` returns no rows.
 - LIMIT without ORDER BY returns arbitrary rows (not guaranteed to be the "first" n).
+- `OFFSET` (including `LIMIT offset, n`) is rejected: "unsupported: OFFSET is not supported in v1".
 - Default: no limit (returns all matching rows).
 
 ### Field Path Notation
@@ -62,7 +65,6 @@ These produce a parse-time error and are NOT supported:
 - Secondary indexes on non-PK columns
 - `ORDER BY` with result ordering
 - Delete/tombstone semantics
-- Per-view KV buckets
 
 ## Examples
 

@@ -1,6 +1,8 @@
 package embed
 
 import (
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -125,5 +127,55 @@ func TestStartNodeServerAccess(t *testing.T) {
 	}
 	if srv.ClientURL() != node.ClientURL() {
 		t.Errorf("Server().ClientURL() = %q, want %q", srv.ClientURL(), node.ClientURL())
+	}
+}
+
+// TestStartNode_DefaultStoreIsPrivate verifies that nodes without a
+// StoreDir never share state: each gets its own temporary store, deleted on
+// Shutdown (OP-01).
+func TestStartNode_DefaultStoreIsPrivate(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	first, err := StartNode(NodeConfig{Port: -1})
+	if err != nil {
+		t.Fatalf("StartNode failed: %v", err)
+	}
+	nc, err := nats.Connect(first.ClientURL())
+	if err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	if _, err := js.CreateStream(t.Context(), jetstream.StreamConfig{Name: "PRIVATE", Subjects: []string{"private.>"}}); err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+	nc.Close()
+	firstDir := first.tempDir
+	first.Shutdown()
+	if _, err := os.Stat(firstDir); !os.IsNotExist(err) {
+		t.Errorf("temporary store %s still exists after Shutdown (err=%v)", firstDir, err)
+	}
+
+	second, err := StartNode(NodeConfig{Port: -1})
+	if err != nil {
+		t.Fatalf("StartNode failed: %v", err)
+	}
+	defer second.Shutdown()
+	if second.tempDir == firstDir {
+		t.Errorf("both nodes used store %s", firstDir)
+	}
+	nc2, err := nats.Connect(second.ClientURL())
+	if err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	defer nc2.Close()
+	js2, err := jetstream.New(nc2)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	if _, err := js2.Stream(t.Context(), "PRIVATE"); !errors.Is(err, jetstream.ErrStreamNotFound) {
+		t.Errorf("second default node sees the first node's stream: %v", err)
 	}
 }

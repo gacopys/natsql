@@ -6,16 +6,19 @@
 package cfg
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/nats-io/nats.go"
 	"gopkg.in/yaml.v3"
 
-	"github.com/gacopys/natsql/internal/kv"
+	"github.com/gacopys/natsql/v2/internal/kv"
 )
 
 // ColumnType represents the type of a column in a materialized view.
@@ -42,12 +45,21 @@ func (ct ColumnType) Valid() bool {
 	}
 }
 
+// DefaultQuerySubject is the NATS subject the query endpoint listens on when
+// NATSConfig.QuerySubject is empty (D-34).
+const DefaultQuerySubject = "natsql.query"
+
 // NATSConfig configures the NATS connection for the engine.
 type NATSConfig struct {
 	URL      string `yaml:"url,omitempty" json:"url,omitempty"`             // default "nats://localhost:4222"
 	Embedded bool   `yaml:"embedded,omitempty" json:"embedded,omitempty"`   // start embedded NATS
-	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"` // JetStream store dir
+	StoreDir string `yaml:"store_dir,omitempty" json:"store_dir,omitempty"` // JetStream store dir; empty = private temp dir removed on Close
 	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`           // embedded NATS port (0 = random)
+
+	// QuerySubject is the request-reply subject for SQL queries (TR-01).
+	// Engines sharing a subject form one queue group and split requests, so
+	// give independent deployments on one account different subjects.
+	QuerySubject string `yaml:"query_subject,omitempty" json:"query_subject,omitempty"` // default "natsql.query"
 }
 
 // HTTPConfig configures the HTTP query API server.
@@ -69,6 +81,9 @@ func (cfg *Config) SetDefaults() {
 	}
 	if cfg.HTTP.Port == 0 {
 		cfg.HTTP.Port = 8080
+	}
+	if cfg.NATS.QuerySubject == "" {
+		cfg.NATS.QuerySubject = DefaultQuerySubject
 	}
 
 	// Migrate deprecated BatchSize to MaxAckPending
@@ -108,7 +123,11 @@ type IndexConfig struct {
 
 // ConsumerConfig configures the JetStream consumer for a view.
 type ConsumerConfig struct {
-	MaxAckPending  int `yaml:"max_ack_pending,omitempty" json:"max_ack_pending,omitempty"`
+	MaxAckPending int `yaml:"max_ack_pending,omitempty" json:"max_ack_pending,omitempty"`
+
+	// MaxDeliver is how many delivery attempts an event gets before a
+	// transient failure sends it to the DLQ. 0 means the default (10) and
+	// -1 means retry until it succeeds (WR-07).
 	MaxDeliver     int `yaml:"max_deliver,omitempty" json:"max_deliver,omitempty"`
 	AckWaitSeconds int `yaml:"ack_wait_seconds,omitempty" json:"ack_wait_seconds,omitempty"`
 
@@ -153,6 +172,10 @@ func (cfg *Config) Validate() error {
 
 	cfg.SetDefaults()
 
+	if !isValidSubject(cfg.NATS.QuerySubject) {
+		errs = append(errs, fmt.Sprintf("nats.query_subject %q is not a valid NATS subject (no spaces, wildcards or empty tokens)", cfg.NATS.QuerySubject))
+	}
+
 	viewNames := make(map[string]bool)
 	for i, v := range cfg.Views {
 		prefix := fmt.Sprintf("views[%d]", i)
@@ -172,15 +195,22 @@ func (cfg *Config) Validate() error {
 	return fmt.Errorf("validation errors:\n  - %s", strings.Join(errs, "\n  - "))
 }
 
-func validateView(v *ViewConfig, prefix string, viewNames map[string]bool) []string {
-	var errs []string
-
-	if v.Name == "" {
-		errs = append(errs, prefix+": name is required")
-	} else if viewNames[v.Name] {
-		errs = append(errs, fmt.Sprintf("%s: duplicate view name %q", prefix, v.Name))
+// validateViewName checks that a view has a valid, unique name (CF-01).
+func validateViewName(name, prefix string, viewNames map[string]bool) []string {
+	defer func() { viewNames[name] = true }()
+	switch {
+	case name == "":
+		return []string{prefix + ": name is required"}
+	case !ValidViewName(name):
+		return []string{fmt.Sprintf("%s: view name %q is invalid (use letters, digits and '_', starting with a letter or '_')", prefix, name)}
+	case viewNames[name]:
+		return []string{fmt.Sprintf("%s: duplicate view name %q", prefix, name)}
 	}
-	viewNames[v.Name] = true
+	return nil
+}
+
+func validateView(v *ViewConfig, prefix string, viewNames map[string]bool) []string {
+	errs := validateViewName(v.Name, prefix, viewNames)
 
 	if v.SourceStream == "" {
 		errs = append(errs, prefix+": source_stream is required")
@@ -196,6 +226,10 @@ func validateView(v *ViewConfig, prefix string, viewNames map[string]bool) []str
 
 	if len(v.Columns) == 0 {
 		errs = append(errs, prefix+": at least one column is required")
+	}
+
+	if v.Consumer.MaxDeliver < -1 {
+		errs = append(errs, fmt.Sprintf("%s: consumer.max_deliver %d is invalid (use -1 for unlimited, 0 for the default, or a positive count)", prefix, v.Consumer.MaxDeliver))
 	}
 
 	hasPK := false
@@ -273,6 +307,31 @@ func crossValidateKeyFields(v *ViewConfig, prefix string) []string {
 	return errs
 }
 
+// viewNamePattern is the set of valid view names (CF-01). A view name is used
+// as a SQL identifier, a NATS KV key token and part of the durable consumer
+// name, so it may not contain '.', '/', '-', wildcards or whitespace; a '/'
+// could even alias another view's keys.
+var viewNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidViewName reports whether name is a valid view name (CF-01).
+func ValidViewName(name string) bool {
+	return viewNamePattern.MatchString(name)
+}
+
+// isValidSubject reports whether s is a literal NATS subject: non-empty,
+// with no whitespace, no wildcards and no empty tokens.
+func isValidSubject(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	for _, tok := range strings.Split(s, ".") {
+		if tok == "" || tok == "*" || tok == ">" {
+			return false
+		}
+	}
+	return true
+}
+
 // isValidKeySeparator reports whether sep can join composite PK components
 // without ambiguity (WR-04). Every character must be a valid NATS KV key
 // character (^[-/_=.a-zA-Z0-9]+$) except '_', which kv.BuildPKKey uses as its
@@ -301,9 +360,9 @@ func (vc *ViewConfig) BuildSchema() *kv.ViewSchema {
 	sep := vc.KeySeparator
 	if sep == "" {
 		// Default separator must be a valid NATS KV key character
-		// (valid set: [-/_=.a-zA-Z0-9]). '/' is chosen because it is
-		// already escaped in PK part values by SanitizePK (→ "_s"),
-		// so composite keys cannot collide with embedded slashes.
+		// (valid set: [-/_=.a-zA-Z0-9]). '/' is chosen because
+		// kv.BuildPKKey always escapes it inside PK components (→ "_x2f")
+		// and it doesn't add a subject token to the key.
 		sep = "/"
 	}
 
@@ -322,5 +381,47 @@ func (vc *ViewConfig) BuildSchema() *kv.ViewSchema {
 		KeyFields:    vc.KeyFields,
 		KeySeparator: sep,
 		Version:      1,
+		SourceStream: vc.SourceStream,
+		Fingerprint:  vc.fingerprint(sep),
 	}
+}
+
+// fingerprint hashes everything that decides which rows a view holds and
+// under which keys: the source stream and filter, the column mappings and
+// types, the key fields and separator, and the KV key layout. Two configs
+// with the same fingerprint produce identical rows from the same events, so
+// a stored view can be resumed; any other change needs a rebuild (WR-09).
+// Consumer tuning is deliberately left out.
+func (vc *ViewConfig) fingerprint(sep string) string {
+	type column struct {
+		Name       string `json:"name"`
+		From       string `json:"from"`
+		Type       string `json:"type"`
+		PrimaryKey bool   `json:"primary_key"`
+	}
+	def := struct {
+		KeyLayout     int      `json:"key_layout"`
+		SourceStream  string   `json:"source_stream"`
+		SourceSubject string   `json:"source_subject"`
+		KeyFields     []string `json:"key_fields"`
+		KeySeparator  string   `json:"key_separator"`
+		Columns       []column `json:"columns"`
+	}{
+		KeyLayout:     kv.KeyLayoutVersion,
+		SourceStream:  vc.SourceStream,
+		SourceSubject: vc.SourceSubject,
+		KeyFields:     vc.KeyFields,
+		KeySeparator:  sep,
+	}
+	for _, c := range vc.Columns {
+		def.Columns = append(def.Columns, column{
+			Name:       c.Name,
+			From:       strings.TrimPrefix(c.From, "$."), // "$.a" and "a" read the same field
+			Type:       string(c.Type),
+			PrimaryKey: c.PrimaryKey,
+		})
+	}
+	data, _ := json.Marshal(def) // strings, ints and bools always marshal
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:16])
 }

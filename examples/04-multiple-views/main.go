@@ -8,22 +8,32 @@
 //  3. Publish events to both streams
 //  4. Query both views independently
 //  5. Shows that views are isolated by name prefix in KV
+//
+// The program checks every result and exits non-zero if one is wrong.
 
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	// Two independent views in one config
 	cfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
@@ -55,28 +65,27 @@ func main() {
 
 	eng, err := natsql.NewEmbedded(cfg)
 	if err != nil {
-		log.Fatalf("NewEmbedded: %v", err)
+		return fmt.Errorf("NewEmbedded: %w", err)
 	}
 	defer eng.Close()
 
 	// Create streams before starting engine
-	nc := eng.NC()
-	js, err := jetstream.New(nc)
+	js, err := jetstream.New(eng.NC())
 	if err != nil {
-		log.Fatalf("JetStream: %v", err)
+		return fmt.Errorf("JetStream: %w", err)
 	}
 
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "user-stream", Subjects: []string{"users.>"}}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{Name: "product-stream", Subjects: []string{"products.>"}}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 
 	if err := eng.Start(ctx); err != nil {
-		log.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
-	fmt.Println("✓ Engine started with 2 views\n")
+	fmt.Print("✓ Engine started with 2 views\n\n")
 
 	// Publish user events
 	for _, u := range []string{
@@ -84,7 +93,7 @@ func main() {
 		`{"id": "u2", "name": "Bob", "role": "viewer"}`,
 	} {
 		if _, err := js.Publish(ctx, "users.created", []byte(u)); err != nil {
-			log.Fatalf("Publish user: %v", err)
+			return fmt.Errorf("Publish user: %w", err)
 		}
 	}
 	fmt.Println("  Published 2 user events")
@@ -96,45 +105,102 @@ func main() {
 		`{"sku": "SKU-003", "title": "Doohickey", "price": 49.99, "in_stock": true}`,
 	} {
 		if _, err := js.Publish(ctx, "products.created", []byte(p)); err != nil {
-			log.Fatalf("Publish product: %v", err)
+			return fmt.Errorf("Publish product: %w", err)
 		}
 	}
-	fmt.Println("  Published 3 product events\n")
+	fmt.Print("  Published 3 product events\n\n")
 
-	time.Sleep(time.Second)
+	// Each view holds only its own rows
+	if _, err := waitForRows(ctx, eng, "SELECT * FROM users WHERE user_id != ''", 2); err != nil {
+		return err
+	}
+	if _, err := waitForRows(ctx, eng, "SELECT * FROM products WHERE sku != ''", 3); err != nil {
+		return err
+	}
 
 	// Query users
 	fmt.Println("── Users ──")
-	res := eng.Query(ctx, "SELECT * FROM users WHERE user_id = 'u1'")
-	pretty(res, "Alice")
-	res = eng.Query(ctx, "SELECT name, role FROM users WHERE user_id = 'u2'")
-	pretty(res, "Bob (projected)")
+	rows, err := waitForRows(ctx, eng, "SELECT * FROM users WHERE user_id = 'u1'", 1)
+	if err != nil {
+		return err
+	}
+	if err := expectRow(rows[0], map[string]string{"user_id": "u1", "name": "Alice", "role": "admin"}); err != nil {
+		return fmt.Errorf("Alice: %w", err)
+	}
+	pretty(rows, "Alice")
+
+	rows, err = waitForRows(ctx, eng, "SELECT name, role FROM users WHERE user_id = 'u2'", 1)
+	if err != nil {
+		return err
+	}
+	if err := expectRow(rows[0], map[string]string{"name": "Bob", "role": "viewer"}); err != nil {
+		return fmt.Errorf("Bob: %w", err)
+	}
+	if len(rows[0]) != 2 {
+		return fmt.Errorf("Bob: projection returned %d columns, want 2", len(rows[0]))
+	}
+	pretty(rows, "Bob (projected)")
 
 	// Query products
 	fmt.Println("── Products ──")
-	res = eng.Query(ctx, "SELECT * FROM products WHERE sku = 'SKU-002'")
-	pretty(res, "Gadget")
+	rows, err = waitForRows(ctx, eng, "SELECT * FROM products WHERE sku = 'SKU-002'", 1)
+	if err != nil {
+		return err
+	}
+	if err := expectRow(rows[0], map[string]string{"title": "Gadget", "price": "24.99", "in_stock": "false"}); err != nil {
+		return fmt.Errorf("Gadget: %w", err)
+	}
+	pretty(rows, "Gadget")
 
 	// Query a non-existent view — should error clearly
-	res = eng.Query(ctx, "SELECT * FROM nonexistent WHERE id = 'x'")
-	if res.Error != nil {
-		fmt.Printf("  ✓ Unknown view error: %s\n", *res.Error)
+	res := eng.Query(ctx, "SELECT * FROM nonexistent WHERE id = 'x'")
+	if res.Error == nil || !strings.Contains(*res.Error, `view "nonexistent" not found`) {
+		return fmt.Errorf("unknown view: got %+v, want a not-found error", res)
 	}
+	fmt.Printf("  ✓ Unknown view error: %s\n", *res.Error)
 
 	// Query a non-existent column — should error clearly
 	res = eng.Query(ctx, "SELECT fake_column FROM users WHERE user_id = 'u1'")
-	if res.Error != nil {
-		fmt.Printf("  ✓ Unknown column error: %s\n", *res.Error)
+	if res.Error == nil || !strings.Contains(*res.Error, `column "fake_column" not found`) {
+		return fmt.Errorf("unknown column: got %+v, want a not-found error", res)
 	}
+	fmt.Printf("  ✓ Unknown column error: %s\n", *res.Error)
 
 	fmt.Println("\n✅ Multiple views work independently in one engine!")
+	return nil
 }
 
-func pretty(r *natsql.QueryResult, label string) {
-	if r.Error != nil {
-		fmt.Printf("  ✗ %s: %s\n", label, *r.Error)
-		return
-	}
-	b, _ := json.MarshalIndent(r.Results, "    ", "  ")
+func pretty(rows []map[string]any, label string) {
+	b, _ := json.MarshalIndent(rows, "    ", "  ") // rows always encode: they came from JSON
 	fmt.Printf("  ✓ %s: %s\n", label, string(b))
+}
+
+// waitForRows runs sql until it returns want rows, so the example doesn't
+// depend on how quickly events are materialized. It gives up after 10s.
+func waitForRows(ctx context.Context, eng *natsql.Engine, sql string, want int) ([]map[string]any, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res := eng.Query(ctx, sql)
+		if res.Error != nil {
+			return nil, fmt.Errorf("%s: %s", sql, *res.Error)
+		}
+		if len(res.Results) == want {
+			return res.Results, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: got %d rows, want %d", sql, len(res.Results), want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// expectRow checks columns of a result row, compared as text.
+func expectRow(row map[string]any, want map[string]string) error {
+	var errs []error
+	for col, w := range want {
+		if got := fmt.Sprint(row[col]); got != w {
+			errs = append(errs, fmt.Errorf("column %s = %s, want %s", col, got, w))
+		}
+	}
+	return errors.Join(errs...)
 }

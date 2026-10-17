@@ -1,12 +1,14 @@
-// 14-yaml-vs-json — loading config from JSON file vs in-code Go struct.
+// 14-yaml-vs-json — loading config from YAML and JSON files vs an in-code Go struct.
 //
 // Run: go run .
 //
 // What it does:
-//  1. Writes a config.json file at runtime
-//  2. Loads it with natsql.LoadConfig()
-//  3. Shows equivalent config in Go struct
-//  4. Both produce equivalent engines — prints comparison
+//  1. Writes the same view config as config.yaml and config.json
+//  2. Loads both with natsql.LoadConfig()
+//  3. Compares them with the equivalent Go struct
+//  4. Runs an engine from the JSON-loaded config and queries it
+//
+// The program checks every result and exits non-zero if one is wrong.
 
 package main
 
@@ -16,17 +18,25 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
-func main() {
-	ctx := context.Background()
+const yamlConfig = `views:
+  - name: customers
+    source_stream: cust-stream
+    key_fields: [cust_id]
+    columns:
+      - {name: cust_id, from: id, type: string, primary_key: true}
+      - {name: name, from: name, type: string}
+`
 
-	jsonConfig := `{
+const jsonConfig = `{
   "views": [
     {
       "name": "customers",
@@ -40,21 +50,29 @@ func main() {
   ]
 }`
 
-	if err := os.WriteFile("config.json", []byte(jsonConfig), 0644); err != nil {
-		log.Fatalf("WriteFile: %v", err)
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
-	defer os.Remove("config.json")
+}
 
-	jsonCfg, err := natsql.LoadConfig("config.json")
+func run() error {
+	ctx := context.Background()
+
+	dir, err := os.MkdirTemp("", "natsql-example-14-")
 	if err != nil {
-		log.Fatalf("LoadConfig: %v", err)
+		return fmt.Errorf("MkdirTemp: %w", err)
 	}
+	defer os.RemoveAll(dir)
 
-	fmt.Println("═══ Loaded from config.json ═══")
-	fmt.Printf("  View: %s, Stream: %s, PK: %v\n\n",
-		jsonCfg.Views[0].Name,
-		jsonCfg.Views[0].SourceStream,
-		jsonCfg.Views[0].KeyFields)
+	yamlCfg, err := writeAndLoad(filepath.Join(dir, "config.yaml"), yamlConfig)
+	if err != nil {
+		return err
+	}
+	jsonCfg, err := writeAndLoad(filepath.Join(dir, "config.json"), jsonConfig)
+	if err != nil {
+		return err
+	}
 
 	goCfg := &natsql.Config{
 		Views: []natsql.ViewConfig{
@@ -69,47 +87,81 @@ func main() {
 			},
 		},
 	}
+	goCfg.SetDefaults() // LoadConfig applies defaults too
 
-	fmt.Println("═══ Equivalent Go struct ═══")
-	fmt.Printf("  View: %s, Stream: %s, PK: %v\n\n",
-		goCfg.Views[0].Name,
-		goCfg.Views[0].SourceStream,
-		goCfg.Views[0].KeyFields)
+	for name, cfg := range map[string]*natsql.Config{"config.yaml": yamlCfg, "config.json": jsonCfg} {
+		if !reflect.DeepEqual(cfg, goCfg) {
+			return fmt.Errorf("%s loaded as %+v, want %+v", name, *cfg, *goCfg)
+		}
+		fmt.Printf("✓ %s matches the Go struct: view %s, stream %s, PK %v\n",
+			name, cfg.Views[0].Name, cfg.Views[0].SourceStream, cfg.Views[0].KeyFields)
+	}
 
-	match := jsonCfg.Views[0].Name == goCfg.Views[0].Name &&
-		jsonCfg.Views[0].SourceStream == goCfg.Views[0].SourceStream
-	fmt.Printf("  Configs equivalent: %v\n\n", match)
-
-	fmt.Println("── Run engine with Go struct config ──")
-	eng, err := natsql.NewEmbedded(goCfg)
+	fmt.Println("\n── Run engine with the JSON-loaded config ──")
+	eng, err := natsql.NewEmbedded(jsonCfg)
 	if err != nil {
-		log.Fatalf("NewEmbedded: %v", err)
+		return fmt.Errorf("NewEmbedded: %w", err)
 	}
 	defer eng.Close()
 
 	js, err := jetstream.New(eng.NC())
 	if err != nil {
-		log.Fatalf("JetStream: %v", err)
+		return fmt.Errorf("JetStream: %w", err)
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "cust-stream", Subjects: []string{"customers.>"},
 	}); err != nil {
-		log.Fatalf("CreateStream: %v", err)
+		return fmt.Errorf("CreateStream: %w", err)
 	}
 
 	if err := eng.Start(ctx); err != nil {
-		log.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
 
 	if _, err := js.Publish(ctx, "customers.created", []byte(`{"id":"c1","name":"Acme Corp"}`)); err != nil {
-		log.Fatalf("Publish: %v", err)
+		return fmt.Errorf("Publish: %w", err)
 	}
 
-	time.Sleep(time.Second)
+	rows, err := waitForRows(ctx, eng, "SELECT * FROM customers WHERE cust_id = 'c1'", 1)
+	if err != nil {
+		return err
+	}
+	if got := fmt.Sprint(rows[0]["name"]); got != "Acme Corp" {
+		return fmt.Errorf("c1 name = %q, want %q", got, "Acme Corp")
+	}
+	b, _ := json.MarshalIndent(rows, "  ", "  ") // rows always encode: they came from JSON
+	fmt.Printf("  ✓ Query result: %s\n", b)
 
-	res := eng.Query(ctx, "SELECT * FROM customers WHERE cust_id = 'c1'")
-	b, _ := json.MarshalIndent(res.Results, "  ", "  ")
-	fmt.Printf("  Query result: %s\n", b)
+	fmt.Println("\n✅ YAML, JSON and Go struct configs are equivalent!")
+	return nil
+}
 
-	fmt.Println("\n✅ JSON file config and Go struct config are equivalent!")
+func writeAndLoad(path, content string) (*natsql.Config, error) {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return nil, fmt.Errorf("WriteFile: %w", err)
+	}
+	cfg, err := natsql.LoadConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("LoadConfig(%s): %w", filepath.Base(path), err)
+	}
+	return cfg, nil
+}
+
+// waitForRows runs sql until it returns want rows, so the example doesn't
+// depend on how quickly events are materialized. It gives up after 10s.
+func waitForRows(ctx context.Context, eng *natsql.Engine, sql string, want int) ([]map[string]any, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res := eng.Query(ctx, sql)
+		if res.Error != nil {
+			return nil, fmt.Errorf("%s: %s", sql, *res.Error)
+		}
+		if len(res.Results) == want {
+			return res.Results, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: got %d rows, want %d", sql, len(res.Results), want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

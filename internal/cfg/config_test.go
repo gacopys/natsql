@@ -3,6 +3,7 @@ package cfg
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -472,5 +473,134 @@ func TestValidate_KeySeparator(t *testing.T) {
 				t.Errorf("separator %q accepted, want validation error", tc.sep)
 			}
 		})
+	}
+}
+
+// validView returns a minimal view that passes validation.
+func validView(name string) ViewConfig {
+	return ViewConfig{
+		Name:         name,
+		SourceStream: "s",
+		KeyFields:    []string{"id"},
+		Columns:      []ColumnConfig{{Name: "id", From: "id", Type: ColumnTypeString, PrimaryKey: true}},
+	}
+}
+
+// TestValidate_ViewName verifies that view names are restricted to SQL- and
+// NATS-safe identifiers (CF-01).
+func TestValidate_ViewName(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"users", true},
+		{"Users2", true},
+		{"_internal", true},
+		{"user_profiles", true},
+		{"users.v2", false}, // '.' would split the KV key and durable name
+		{"my view", false},  // whitespace
+		{"user-profiles", false},
+		{"a/pk/b", false}, // would alias view "a"'s keys
+		{"2users", false}, // not a SQL identifier
+		{"users*", false},
+		{"users>", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Views: []ViewConfig{validView(tc.name)}}
+			err := cfg.Validate()
+			if tc.valid && err != nil {
+				t.Errorf("view name %q rejected: %v", tc.name, err)
+			}
+			if !tc.valid && (err == nil || !strings.Contains(err.Error(), "view name")) {
+				t.Errorf("view name %q: got %v, want a view name error", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestValidate_QuerySubject verifies the query subject defaults and rejects
+// wildcards and malformed subjects (TR-01).
+func TestValidate_QuerySubject(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.NATS.QuerySubject != DefaultQuerySubject {
+		t.Errorf("default query subject = %q, want %q", cfg.NATS.QuerySubject, DefaultQuerySubject)
+	}
+
+	for _, subject := range []string{"natsql.*", "natsql.>", "natsql..query", ".natsql", "nat sql"} {
+		cfg := &Config{NATS: NATSConfig{QuerySubject: subject}}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "query_subject") {
+			t.Errorf("query subject %q: got %v, want a query_subject error", subject, err)
+		}
+	}
+}
+
+// TestValidate_MaxDeliver verifies that -1 (unlimited) is accepted and other
+// negative values are rejected rather than silently replaced (WR-07).
+func TestValidate_MaxDeliver(t *testing.T) {
+	for _, tc := range []struct {
+		maxDeliver int
+		valid      bool
+	}{{-1, true}, {0, true}, {3, true}, {-2, false}} {
+		v := validView("v")
+		v.Consumer.MaxDeliver = tc.maxDeliver
+		err := (&Config{Views: []ViewConfig{v}}).Validate()
+		if tc.valid != (err == nil) {
+			t.Errorf("max_deliver %d: got %v, want valid=%v", tc.maxDeliver, err, tc.valid)
+		}
+	}
+}
+
+// TestBuildSchema_Fingerprint verifies that the fingerprint changes with
+// every setting that decides a view's rows and keys, and with nothing else
+// (WR-09).
+func TestBuildSchema_Fingerprint(t *testing.T) {
+	base := func() ViewConfig {
+		v := validView("v")
+		v.Columns = append(v.Columns, ColumnConfig{Name: "n", From: "n", Type: ColumnTypeNumber})
+		return v
+	}
+	want := func() string { v := base(); return v.BuildSchema().Fingerprint }()
+	if want == "" {
+		t.Fatal("fingerprint is empty")
+	}
+
+	same := map[string]func(*ViewConfig){
+		"consumer tuning":   func(v *ViewConfig) { v.Consumer = ConsumerConfig{MaxAckPending: 5, MaxDeliver: 3, AckWaitSeconds: 9} },
+		"$. path prefix":    func(v *ViewConfig) { v.Columns[1].From = "$.n" },
+		"default separator": func(v *ViewConfig) { v.KeySeparator = "/" },
+	}
+	for name, mutate := range same {
+		v := base()
+		mutate(&v)
+		if got := v.BuildSchema().Fingerprint; got != want {
+			t.Errorf("%s changed the fingerprint", name)
+		}
+	}
+
+	changed := map[string]func(*ViewConfig){
+		"source stream":  func(v *ViewConfig) { v.SourceStream = "other" },
+		"source subject": func(v *ViewConfig) { v.SourceSubject = "s.a" },
+		"column added": func(v *ViewConfig) {
+			v.Columns = append(v.Columns, ColumnConfig{Name: "x", From: "x", Type: ColumnTypeString})
+		},
+		"column mapping": func(v *ViewConfig) { v.Columns[1].From = "m" },
+		"column type":    func(v *ViewConfig) { v.Columns[1].Type = ColumnTypeString },
+		"column renamed": func(v *ViewConfig) { v.Columns[1].Name = "m" },
+		"separator":      func(v *ViewConfig) { v.KeySeparator = "-" },
+		"key fields": func(v *ViewConfig) {
+			v.Columns[1].PrimaryKey = true
+			v.KeyFields = []string{"id", "n"}
+		},
+	}
+	for name, mutate := range changed {
+		v := base()
+		mutate(&v)
+		if got := v.BuildSchema().Fingerprint; got == want {
+			t.Errorf("%s did not change the fingerprint", name)
+		}
 	}
 }

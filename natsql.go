@@ -8,7 +8,7 @@
 //
 // Basic usage for Go library consumers:
 //
-//	import "github.com/gacopys/natsql"
+//	import "github.com/gacopys/natsql/v2"
 //
 //	eng, err := natsql.New(js, cfg, natsql.WithLogger(logger))
 //	if err != nil { ... }
@@ -22,13 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/gacopys/natsql/internal/embed"
-	"github.com/gacopys/natsql/internal/engine"
-	"github.com/gacopys/natsql/internal/query"
+	"github.com/gacopys/natsql/v2/internal/embed"
+	"github.com/gacopys/natsql/v2/internal/engine"
+	"github.com/gacopys/natsql/v2/internal/query"
 )
 
 // Engine wraps the internal engine with lifecycle ownership (D-48).
@@ -40,7 +41,20 @@ type Engine struct {
 	*engine.Engine
 	ownedNC   *nats.Conn  // closed on Close() if non-nil (D-48)
 	embedNode *embed.Node // shutdown on Close() if non-nil
+	closeOnce sync.Once   // releases ownedNC and embedNode exactly once
 }
+
+// ErrViewRebuildRequired is returned by Start when a view's stored rows came
+// from a different view definition or an earlier natsql key layout. Drop the
+// view with Engine.DropView (or `natsql drop-view`) and start again to
+// rebuild it from its source stream.
+var ErrViewRebuildRequired = engine.ErrViewRebuildRequired
+
+// Stats holds operational metrics returned by Engine.Stats.
+type Stats = engine.Stats
+
+// ViewStatus reports one view's materializer in Stats.
+type ViewStatus = engine.ViewStatus
 
 // New creates an Engine from a caller-owned JetStream context (D-47).
 // The caller is responsible for closing the NATS connection and JetStream context.
@@ -114,22 +128,22 @@ func NewEmbedded(cfgVal *Config, opts ...Option) (*Engine, error) {
 // then shuts down embedded NATS if started by this facade, and finally
 // closes the owned NATS connection.
 //
-// Safe to call multiple times — subsequent calls are no-ops.
+// Owned resources are released by the first call only, so it is safe to
+// call Close more than once and from several goroutines. Calls after the
+// first, and calls on an engine that was never started, return
+// engine.ErrNotStarted from the inner engine.
 func (e *Engine) Close() error {
 	// Close internal engine first (shuts down materializers, HTTP, etc.)
 	err := e.Engine.Close()
 
-	// Shutdown embedded NATS server if owned
-	if e.embedNode != nil {
-		e.embedNode.Shutdown()
-		e.embedNode = nil
-	}
-
-	// Close owned NATS connection
-	if e.ownedNC != nil {
-		e.ownedNC.Close()
-		e.ownedNC = nil
-	}
+	e.closeOnce.Do(func() {
+		if e.embedNode != nil {
+			e.embedNode.Shutdown()
+		}
+		if e.ownedNC != nil {
+			e.ownedNC.Close()
+		}
+	})
 
 	return err
 }

@@ -11,10 +11,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,7 +24,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 
-	"github.com/gacopys/natsql"
+	"github.com/gacopys/natsql/v2"
 )
 
 var rootCmd = &cobra.Command{
@@ -53,6 +55,26 @@ CLI flags override config file values (D-52).`,
 	},
 }
 
+var dropViewCmd = &cobra.Command{
+	Use:   "drop-view",
+	Short: "Delete a view's materialized state so it is rebuilt on the next start",
+	Long: `Delete a view's durable consumer, rows and schema, in the current and the
+original key layout, so the next server start replays the view from the
+beginning of its source stream.
+
+Run it when the server refuses to start with "view must be rebuilt": after a
+view's columns, mappings, key fields, separator or source changed, or after
+upgrading from a natsql version with the earlier key layout. Stop every
+server materializing the view first. Events the source stream no longer
+retains can't be replayed.
+
+  natsql drop-view --config=config.yaml --view=users
+  natsql drop-view --config=config.yaml -e --store-dir=./data --view=users`,
+	RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // cobra convention: args is unused
+		return runDropView(cmd.Context())
+	},
+}
+
 // CLI flags.
 var (
 	cfgPath       string
@@ -61,16 +83,21 @@ var (
 	storeDir      string
 	httpPort      int
 	createStreams bool
+	dropViewName  string
 )
 
 func init() {
-	serverCmd.Flags().StringVarP(&cfgPath, "config", "c", "config.yaml", "Path to config file")
-	serverCmd.Flags().BoolVarP(&embedded, "embedded", "e", false, "Start embedded NATS server")
-	serverCmd.Flags().StringVarP(&natsURL, "nats-url", "u", "", "NATS server URL (overrides config)")
-	serverCmd.Flags().StringVar(&storeDir, "store-dir", "", "JetStream store directory (embedded mode)")
+	for _, cmd := range []*cobra.Command{serverCmd, dropViewCmd} {
+		cmd.Flags().StringVarP(&cfgPath, "config", "c", "config.yaml", "Path to config file")
+		cmd.Flags().BoolVarP(&embedded, "embedded", "e", false, "Start embedded NATS server")
+		cmd.Flags().StringVarP(&natsURL, "nats-url", "u", "", "NATS server URL (overrides config)")
+		cmd.Flags().StringVar(&storeDir, "store-dir", "", "JetStream store directory (embedded mode)")
+	}
 	serverCmd.Flags().IntVarP(&httpPort, "port", "p", 0, "HTTP query API port (overrides config)")
 	serverCmd.Flags().BoolVar(&createStreams, "create-streams", false, "Create source streams in external mode (embedded: always created)")
-	rootCmd.AddCommand(serverCmd)
+	dropViewCmd.Flags().StringVar(&dropViewName, "view", "", "Name of the view to drop (required)")
+	_ = dropViewCmd.MarkFlagRequired("view") // only fails for an unknown flag name
+	rootCmd.AddCommand(serverCmd, dropViewCmd)
 }
 
 func main() {
@@ -79,10 +106,11 @@ func main() {
 	}
 }
 
-func runServer() error {
+// loadConfig reads the config file and applies the CLI flag overrides (D-52).
+func loadConfig() (*natsql.Config, error) {
 	cfg, err := natsql.LoadConfig(cfgPath)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	if embedded {
@@ -99,15 +127,26 @@ func runServer() error {
 	}
 
 	cfg.SetDefaults()
+	return cfg, nil
+}
+
+func runServer() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Handle signals from the start, so SIGTERM during startup still shuts
+	// down cleanly (OP-09).
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	logger := slog.Default()
-	eng, err := createEngine(cfg, logger)
+	connClosed := make(chan struct{})
+	eng, err := createEngine(cfg, logger, connClosed)
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	createSourceStreams(ctx, eng, cfg, logger)
 
@@ -131,33 +170,80 @@ func runServer() error {
 	}
 
 	if err := eng.Start(ctx); err != nil {
+		_ = eng.Close() // releases the embedded server or the connection; the Start error is the one to report
 		return fmt.Errorf("starting engine: %w", err)
 	}
 	logger.Info("engine started")
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	logger.Info("received signal, shutting down", "signal", sig)
+	var runErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("received signal, shutting down")
+	case <-connClosed:
+		// OP-02: the connection gave up for good; exit non-zero so a
+		// supervisor restarts the process instead of it idling as "up".
+		runErr = errors.New("NATS connection closed")
+		logger.Error("NATS connection closed, shutting down")
+	}
 
 	if err := eng.Close(); err != nil {
-		return fmt.Errorf("error during shutdown: %w", err)
+		return errors.Join(runErr, fmt.Errorf("error during shutdown: %w", err))
 	}
 	logger.Info("server shut down gracefully")
+	return runErr
+}
+
+func runDropView(ctx context.Context) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.NATS.Embedded && cfg.NATS.StoreDir == "" {
+		return errors.New("drop-view in embedded mode needs --store-dir or nats.store_dir: without one the embedded store is temporary")
+	}
+
+	eng, err := createEngine(cfg, slog.Default(), nil)
+	if err != nil {
+		return fmt.Errorf("creating engine: %w", err)
+	}
+	defer func() { _ = eng.Close() }() // never started: only releases the connection
+
+	if err := eng.DropView(ctx, dropViewName); err != nil {
+		return fmt.Errorf("dropping view %q: %w", dropViewName, err)
+	}
+	fmt.Printf("view %q dropped; it is rebuilt from its source stream on the next start\n", dropViewName)
 	return nil
 }
 
-func createEngine(cfg *natsql.Config, logger *slog.Logger) (*natsql.Engine, error) {
+// createEngine connects to NATS (or starts the embedded server) and creates
+// the engine. In external mode the connection retries forever through
+// outages and closes connClosed, if non-nil, once it has closed for good.
+func createEngine(cfg *natsql.Config, logger *slog.Logger, connClosed chan struct{}) (*natsql.Engine, error) {
 	if cfg.NATS.Embedded {
 		logger.Info("creating engine with embedded NATS")
-		return natsql.NewEmbedded(cfg)
+		return natsql.NewEmbedded(cfg, natsql.WithLogger(logger))
 	}
 	logger.Info("connecting to NATS", "url", cfg.NATS.URL)
-	nc, cerr := nats.Connect(cfg.NATS.URL, nats.Timeout(10*time.Second))
+	var closeOnce sync.Once
+	nc, cerr := nats.Connect(cfg.NATS.URL,
+		nats.Timeout(10*time.Second),
+		nats.MaxReconnects(-1), // OP-02: never give up on an outage
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			logger.Warn("NATS disconnected, reconnecting", "error", err)
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			logger.Info("NATS reconnected", "url", nc.ConnectedUrlRedacted())
+		}),
+		nats.ClosedHandler(func(*nats.Conn) {
+			if connClosed != nil {
+				closeOnce.Do(func() { close(connClosed) })
+			}
+		}),
+	)
 	if cerr != nil {
 		return nil, fmt.Errorf("connecting to NATS at %s: %w", cfg.NATS.URL, cerr)
 	}
-	return natsql.NewWithNATS(nc, cfg)
+	return natsql.NewWithNATS(nc, cfg, natsql.WithLogger(logger))
 }
 
 func createSourceStreams(ctx context.Context, eng *natsql.Engine, cfg *natsql.Config, logger *slog.Logger) {

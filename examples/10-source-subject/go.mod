@@ -5,7 +5,7 @@ go 1.26.5
 toolchain go1.27.2
 
 require (
-	github.com/gacopys/natsql v1.0.0
+	github.com/gacopys/natsql/v2 v2.0.0
 	github.com/nats-io/nats.go v1.52.0
 )
 
@@ -34,4 +34,4 @@ require (
 	vitess.io/vitess v0.24.2 // indirect
 )
 
-replace github.com/gacopys/natsql => ../../
+replace github.com/gacopys/natsql/v2 => ../../

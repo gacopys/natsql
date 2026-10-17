@@ -8,8 +8,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	natsql "github.com/gacopys/natsql/internal/cfg"
-	"github.com/gacopys/natsql/internal/testutil"
+	natsql "github.com/gacopys/natsql/v2/internal/cfg"
+	"github.com/gacopys/natsql/v2/internal/testutil"
 )
 
 func TestConsumerName(t *testing.T) {
@@ -106,8 +106,8 @@ func TestSetupConsumer_ConfigFieldsApplied(t *testing.T) {
 
 	info := cons.CachedInfo()
 
-	if info.Config.MaxDeliver != 7 {
-		t.Errorf("MaxDeliver = %d, want 7", info.Config.MaxDeliver)
+	if info.Config.MaxDeliver != -1 { // max_deliver is the materializer's retry budget (WR-07)
+		t.Errorf("MaxDeliver = %d, want -1", info.Config.MaxDeliver)
 	}
 	if info.Config.AckWait != 15*time.Second {
 		t.Errorf("AckWait = %v, want 15s", info.Config.AckWait)
