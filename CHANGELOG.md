@@ -19,6 +19,7 @@ Fixes for the five Critical findings of the October 2026 code review (WR-01 to W
 
 ### Build & CI
 - **Changed**: Lint runs on golangci-lint v2.14.0, because v1.64.8 can't analyze code built with Go 1.27. `.golangci.yml` is migrated to the v2 format with the same linters and settings. The new findings are fixed: tests use `slog.DiscardHandler`, and the HTTP listener binds through `net.ListenConfig`
+- **Security**: Builds, tests and CI use Go 1.27.2 through a `toolchain` line in `go.mod` and every example's `go.mod`. This fixes the 14 standard-library advisories `govulncheck` reports for Go 1.26.5 (e.g. GO-2026-6617, GO-2026-6089, GO-2026-5972). The `go` line stays at 1.26.5, so library users are not forced onto Go 1.27
 
 ### Upgrade notes
 - **Keys unchanged for most views.** Single-component keys, and composite keys using the default `/` separator, encode exactly as before for every value that worked before. No action is needed for these views.

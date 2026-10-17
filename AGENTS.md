@@ -151,7 +151,7 @@ For NATS developers building event-driven systems who need simple queryable stat
 > Full source: [`CONVENTIONS.md`](CONVENTIONS.md). The summary below is regenerated from it.
 
 ### Toolchain
-- Go 1.22+ (toolchain `go 1.26.4`); module `github.com/gacopys/natsql`. Import order enforced by `gci`: stdlib / third-party / `github.com/gacopys/natsql`. No new top-level deps without justification.
+- Go 1.22+ (`go 1.26.5` minimum, `toolchain go1.27.2` for builds/CI); module `github.com/gacopys/natsql`. Import order enforced by `gci`: stdlib / third-party / `github.com/gacopys/natsql`. No new top-level deps without justification.
 
 ### Package layout (root facade + `internal/`)
 - `natsql/` public API (`New`, `NewWithNATS`, `NewEmbedded`, `Query`, `Close`) + `config.go` type aliases that break the import cycle; `internal/` packages never import the root; `cfg` holds config *types*; `engine` imports `cfg` (not the root).

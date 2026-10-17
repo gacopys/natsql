@@ -4,7 +4,7 @@ Authoritative coding, testing, and style conventions for the natsql project. Eve
 
 ## 1. Language & Toolchain
 
-- **Go 1.22+** (constraint). Toolchain pinned to `go 1.26.4` in `go.mod`; CI/lint runs against that line.
+- **Go 1.22+** (constraint). `go.mod` requires `go 1.26.5` (the minimum for library users) and pins `toolchain go1.27.2`, which CI, lint and local builds use (`setup-go` reads the `toolchain` line).
 - **Module path**: `github.com/gacopys/natsql`. All internal imports use this prefix.
 - **No new top-level dependencies** without justification. The stack is intentionally minimal (vitess sqlparser, nats.go/jetstream, nats-server/v2, chi/v5, cobra, yaml.v3). Imports are grouped in `gci` order: stdlib, third-party, `github.com/gacopys/natsql`.
 
