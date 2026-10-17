@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+Fixes for the five Critical findings of the October 2026 code review (WR-01 to WR-05), all of which could silently lose or corrupt materialized state.
+
+### Materializer & Storage
+- **Fixed**: A redelivered older event (after a NAK, a lost ack or an `AckWait` expiry) could overwrite a newer row. `Writer.Apply` now skips events whose stream sequence is not newer than the stored row's, and writes with compare-and-swap (`Create`/`Update` against the revision it read), retrying when a concurrent writer gets there first. Sequences are only compared within one incarnation of the source stream, so a recreated stream's restarted sequences still apply (WR-01)
+- **Fixed**: Write errors not on a short substring list were treated as permanent, so events failing on recoverable errors (`no responders`, `no response from stream`, `JetStream system temporarily unavailable`, disconnects) were dead-lettered and acked, dropping their updates. Only invalid keys, unencodable rows and oversized rows are now terminal, matched by error identity and JetStream error code rather than message text; everything else is retried (WR-02)
+- **Fixed**: Transient failures were NAK'd with no delay, so a one-second outage used up `MaxDeliver` within milliseconds and the event was silently dropped. Retries now back off (250ms doubling, capped at 30s), and the final delivery attempt is dead-lettered instead of NAK'd (WR-02)
+- **Fixed**: PK values containing characters that aren't valid in NATS KV keys (`@`, spaces, `:`, `+`, non-ASCII, a trailing `.`, `..`) produced invalid keys, so their events were dead-lettered and PK lookups failed with `nats: invalid key`. This affected every `timestamp` primary key. `kv.BuildPKKey` now escapes these bytes as `_xHH` (and `.` where needed), so every PK maps to a valid key (WR-03)
+- **Fixed**: With a custom `key_separator`, composite keys could collide (`("globex-sales","widget")` and `("globex","sales-widget")` both became `globex-sales-widget`), so one row overwrote another. Separator characters are now escaped inside components, making the encoding injective (WR-04)
+- **Fixed**: Every query and every `Start` called `CreateOrUpdateKeyValue` with default settings, which reset an existing bucket's history, TTL, size limit and replicas and deleted retained revisions. The bucket is now opened as-is and only created when missing; queries never create or modify it and parse the SQL before touching storage. The DLQ stream is likewise created only when missing, so operator changes to its retention or replicas survive restarts (WR-05)
+- **Changed**: Row `_meta` gains `stream` and `stream_created`, which identify the source stream incarnation used for ordering
+- **Changed**: Each materialized event now does a KV read before its write (one extra round trip per event)
+
+### Config Validation
+- **Changed**: `key_separator` values containing `_` (the PK escape character) or `..` (an empty NATS subject token) are now rejected
+
+### Upgrade notes
+- **Keys unchanged for most views.** Single-component keys, and composite keys using the default `/` separator, encode exactly as before for every value that worked before. No action is needed for these views.
+- **Views with a custom `key_separator` and composite keys must be re-materialized** if any component value contains a character of the separator: such rows are now written under a new key, and the old row stays in the bucket. Stop natsql, purge the view's rows (`<view>/pk/…` keys in `natsql-views`), delete its durable consumer (`nats consumer rm <source_stream> natsql-<view>`), and restart. The view then replays from the start of its source stream.
+- **Recovering events dead-lettered by the old behavior.** Events rejected for invalid PK characters, or dead-lettered because a transient error was misclassified, are in `natsql-dlq` and missing from the view. Deleting the view's durable consumer and restarting replays them. Rows that are already current are left untouched, because replayed events are older than or equal to what is stored.
+- **Rows written before this release** have no `_meta.stream`, so the next event for each key overwrites them regardless of sequence. Ordering protection applies from that write on.
+- **Configs with a `_` or `..` separator now fail validation.** Choose another separator, then re-materialize the view as above.
+- **Bucket and DLQ settings are no longer reset at startup.** Settings you changed on `natsql-views` or `natsql-dlq` now persist, and natsql no longer repairs them for you.
+
 ## [2.0.0] — 2026-07-01
 
 > **122 commits** since v1.0.0 across 170 files changed (16.5k additions, 9.9k deletions).

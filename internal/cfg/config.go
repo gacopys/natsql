@@ -191,7 +191,7 @@ func validateView(v *ViewConfig, prefix string, viewNames map[string]bool) []str
 	}
 
 	if v.KeySeparator != "" && !isValidKeySeparator(v.KeySeparator) {
-		errs = append(errs, fmt.Sprintf("%s: key_separator %q contains characters that are not valid in a NATS KV key (allowed: letters, digits, and - / _ . =)", prefix, v.KeySeparator))
+		errs = append(errs, fmt.Sprintf("%s: key_separator %q is not allowed (use letters, digits, and - / . =; '_' is reserved for PK escaping and \"..\" would form an empty NATS subject token)", prefix, v.KeySeparator))
 	}
 
 	if len(v.Columns) == 0 {
@@ -273,15 +273,22 @@ func crossValidateKeyFields(v *ViewConfig, prefix string) []string {
 	return errs
 }
 
-// isValidKeySeparator reports whether every character in sep is a valid NATS KV
-// key character. NATS KV keys must match ^[-/_=.a-zA-Z0-9]+$.
+// isValidKeySeparator reports whether sep can join composite PK components
+// without ambiguity (WR-04). Every character must be a valid NATS KV key
+// character (^[-/_=.a-zA-Z0-9]+$) except '_', which kv.BuildPKKey uses as its
+// escape character, so a '_' separator could not be told apart from an
+// escape. The separator must also not contain "..", which forms an empty
+// subject token that NATS drops.
 func isValidKeySeparator(sep string) bool {
+	if strings.Contains(sep, "..") {
+		return false
+	}
 	for _, r := range sep {
 		switch {
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
-		case r == '-' || r == '/' || r == '_' || r == '.' || r == '=':
+		case r == '-' || r == '/' || r == '.' || r == '=':
 		default:
 			return false
 		}

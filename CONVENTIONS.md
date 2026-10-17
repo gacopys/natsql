@@ -49,7 +49,7 @@ natsql/                       # public facade: New, NewWithNATS, NewEmbedded, Qu
 - **Never swallow errors silently.** If you intentionally ignore one, assign to `_` and add a one-line comment explaining why (see `transport/nats.go` for the pattern). Lint `errcheck` flags unchecked returns.
 - **Public `Query` returns a `*QueryResult`**, never a Go error. Errors go in `QueryResult.Error` (a `*string`) so the JSON envelope is consistent across NATS/HTTP/Go callers.
 - **Constructors return `(T, error)`** for real errors. Validation failures are errors, not panics.
-- **Error classification at the caller**, not the callee. `Writer.Apply` returns a plain error; `materializer.classifyWriteError` decides transient vs terminal policy.
+- **Error classification at the caller**, not the callee. `Writer.Apply` returns wrapped errors (marking unwritable rows with `errEncodeRow`/`errNilMutation`); `materializer.classifyWriteError` decides transient vs terminal policy by error identity and JetStream error code, never by message text.
 
 ## 5. Logging
 
@@ -129,7 +129,7 @@ go test -race -count=1 -coverprofile=coverage.out -v ./...    # make test
 - **Deprecated fields migrate, then validate**: `BatchSize` → `MaxAckPending` in `SetDefaults`. Keep one release of backward-compat.
 - Add new fields as `omitempty` unless required. Required fields get a non-empty check in `Validate`.
 - **Reject unsupported features at config load**, not at runtime: `Indexes` block currently returns a validation error pointing the user to remove it.
-- `key_separator` must match `^[-/_=.a-zA-Z0-9]+$` (NATS KV key charset). Validated by `isValidKeySeparator`.
+- `key_separator` may use letters, digits and `- / . =`, and must not contain `_` (the PK escape character) or `..`. Validated by `isValidKeySeparator`.
 
 ## 12. Examples
 

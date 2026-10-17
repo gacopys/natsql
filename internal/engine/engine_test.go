@@ -1287,3 +1287,92 @@ func verifyDLQEnvelope(t *testing.T, data []byte, wantViewName, wantOriginal str
 		t.Errorf("original_message decoded to %q, want %q", string(origBytes), wantOriginal)
 	}
 }
+
+// assertBucketConfig fails if the natsql-views bucket's backing stream no
+// longer has the settings and revisions created by
+// TestEngineQueryAndStartDoNotReconfigureBucket.
+func assertBucketConfig(t *testing.T, ctx context.Context, js jetstream.JetStream, step string) {
+	t.Helper()
+	stream, err := js.Stream(ctx, "KV_"+kv.DefaultBucket)
+	if err != nil {
+		t.Fatalf("[%s] opening bucket stream: %v", step, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("[%s] bucket stream info: %v", step, err)
+	}
+	if info.Config.MaxMsgsPerSubject != 5 || info.Config.MaxAge != time.Hour || info.Config.MaxBytes != 1<<20 {
+		t.Errorf("[%s] bucket reconfigured: history=%d ttl=%v max_bytes=%d, want 5 / 1h / 1MiB",
+			step, info.Config.MaxMsgsPerSubject, info.Config.MaxAge, info.Config.MaxBytes)
+	}
+	if info.State.Msgs != 3 {
+		t.Errorf("[%s] retained revisions = %d, want 3", step, info.State.Msgs)
+	}
+}
+
+// TestEngineQueryAndStartDoNotReconfigureBucket verifies that neither the
+// read path nor Start re-applies default bucket settings, which used to drop
+// history, TTL and size limits and delete retained revisions (WR-05).
+func TestEngineQueryAndStartDoNotReconfigureBucket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nc, js := startEmbeddedNATS(t)
+	bucket, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   kv.DefaultBucket,
+		History:  5,
+		TTL:      time.Hour,
+		MaxBytes: 1 << 20,
+		Storage:  jetstream.FileStorage,
+	})
+	if err != nil {
+		t.Fatalf("CreateKeyValue failed: %v", err)
+	}
+	for range 3 {
+		if _, err := bucket.Put(ctx, "test_users/pk/a", []byte(`{"id":"a"}`)); err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{}, engine.WithLogger(logger), engine.WithQueryPort(0))
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	if res := eng.Query(ctx, "INVALID SQL"); res.Error == nil {
+		t.Error("expected a parse error for INVALID SQL")
+	}
+	assertBucketConfig(t, ctx, js, "after invalid query")
+
+	_ = eng.Query(ctx, "SELECT * FROM test_users WHERE id = 'a'")
+	assertBucketConfig(t, ctx, js, "after valid query")
+
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+	assertBucketConfig(t, ctx, js, "after Start")
+}
+
+// TestEngineQueryBeforeBucketExists verifies that a query on a fresh server
+// reports the view as missing without creating the bucket (WR-05).
+func TestEngineQueryBeforeBucketExists(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nc, js := startEmbeddedNATS(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := engine.New(nc, js, &natsqlpkg.Config{}, engine.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New engine failed: %v", err)
+	}
+
+	res := eng.Query(ctx, "SELECT * FROM users WHERE id = 'a'")
+	if res.Error == nil || *res.Error != `view "users" not found` {
+		t.Errorf("Query error = %v, want %q", res.Error, `view "users" not found`)
+	}
+	if _, err := js.KeyValue(ctx, kv.DefaultBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+		t.Errorf("query created the KV bucket (lookup error: %v)", err)
+	}
+}

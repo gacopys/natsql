@@ -10,6 +10,29 @@ import (
 	natsql "github.com/gacopys/natsql/internal/cfg"
 )
 
+// defaultMaxDeliver is the delivery budget used when ConsumerConfig.MaxDeliver
+// is not positive.
+const defaultMaxDeliver = 10
+
+// effectiveMaxDeliver returns the MaxDeliver that SetupConsumer configures for
+// cfg, so the materializer can recognize an event's final delivery attempt.
+func effectiveMaxDeliver(cfg natsql.ConsumerConfig) int {
+	if cfg.MaxDeliver <= 0 {
+		return defaultMaxDeliver
+	}
+	return cfg.MaxDeliver
+}
+
+// lookupSource identifies the current incarnation of a source stream by its
+// name and creation time (WR-01).
+func lookupSource(ctx context.Context, js jetstream.JetStream, streamName string) (Source, error) {
+	stream, err := js.Stream(ctx, streamName)
+	if err != nil {
+		return Source{}, fmt.Errorf("stream %q not found: %w", streamName, err)
+	}
+	return Source{Stream: streamName, Created: stream.CachedInfo().Created}, nil
+}
+
 // ConsumerName returns the durable consumer name for a view.
 // Format: natsql-{viewName} per D-10.
 func ConsumerName(viewName string) string {
@@ -28,10 +51,7 @@ func SetupConsumer(ctx context.Context, js jetstream.JetStream, streamName strin
 	}
 
 	// Apply defaults for zero values
-	maxDeliver := cfg.MaxDeliver
-	if maxDeliver <= 0 {
-		maxDeliver = 10
-	}
+	maxDeliver := effectiveMaxDeliver(cfg)
 
 	ackWaitSeconds := cfg.AckWaitSeconds
 	if ackWaitSeconds <= 0 {

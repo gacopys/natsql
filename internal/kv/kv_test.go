@@ -3,6 +3,9 @@ package kv
 import (
 	"context"
 	"errors"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,4 +224,225 @@ func startEmbeddedNATS(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 
 func isNATSKeyNotFound(err error) bool {
 	return errors.Is(err, jetstream.ErrKeyNotFound)
+}
+
+// TestBuildPKKey_EscapesInvalidKeyCharacters covers PK values that are not
+// valid NATS KV key characters (WR-03).
+func TestBuildPKKey_EscapesInvalidKeyCharacters(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"alice@example.com", "users/pk/alice_x40example.com"},
+		{"a b", "users/pk/a_x20b"},
+		{"2026-10-17T12:00:00Z", "users/pk/2026-10-17T12_x3a00_x3a00Z"},
+		{"zażółć", "users/pk/za_xc5_xbc_xc3_xb3_xc5_x82_xc4_x87"},
+		{"1e+21", "users/pk/1e_x2b21"},
+		{"a.", "users/pk/a_x2e"},     // NATS rejects a trailing '.'
+		{"a..b", "users/pk/a_x2e.b"}, // NATS drops empty tokens
+		{"...", "users/pk/_x2e_x2e_x2e"},
+		{".a", "users/pk/.a"}, // a leading '.' is fine after "/pk/"
+		{"a.b", "users/pk/a.b"},
+		{"user-001", "users/pk/user-001"},
+		{"k=v", "users/pk/k=v"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			if got := BuildPKKey("users", []string{tt.value}, "/"); got != tt.want {
+				t.Errorf("BuildPKKey(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildPKKey_CompositeSeparatorEscaping covers composite keys whose
+// components contain the separator (WR-04).
+func TestBuildPKKey_CompositeSeparatorEscaping(t *testing.T) {
+	tests := []struct {
+		name  string
+		parts []string
+		sep   string
+		want  string
+	}{
+		{"dash in first part", []string{"globex-sales", "widget"}, "-", "t/pk/globex_x2dsales-widget"},
+		{"dash in second part", []string{"globex", "sales-widget"}, "-", "t/pk/globex-sales_x2dwidget"},
+		{"dot separator", []string{"a.b", "c"}, ".", "t/pk/a_x2eb.c"},
+		{"dot separator, empty last", []string{"a", ""}, ".", "t/pk/a._e"},
+		{"dot separator, empty first", []string{"", "b"}, ".", "t/pk/_e.b"},
+		{"letter separator", []string{"axb", "c"}, "x", "t/pk/a_x78bxc"},
+		{"empty parts with slash", []string{"", ""}, "/", "t/pk//"},
+		{"single part ignores separator", []string{"a-b"}, "-", "t/pk/a-b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuildPKKey("t", tt.parts, tt.sep); got != tt.want {
+				t.Errorf("BuildPKKey(%q, %q) = %q, want %q", tt.parts, tt.sep, got, tt.want)
+			}
+		})
+	}
+}
+
+// validKVKey mirrors the nats.go key check plus the server's refusal of
+// empty subject tokens.
+var validKVKey = regexp.MustCompile(`^[-/_=.a-zA-Z0-9]+$`)
+
+func checkValidKey(t *testing.T, key string, parts []string) {
+	t.Helper()
+	if !validKVKey.MatchString(key) || strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
+		t.Fatalf("parts %q encode to invalid KV key %q", parts, key)
+	}
+}
+
+// TestBuildPKKey_ValidAndInjective checks, exhaustively over a small
+// adversarial alphabet, that every two-component key is a valid NATS KV key
+// and that no two component pairs share a key, for every kind of separator
+// that validation accepts (WR-03, WR-04). The alphabet always includes the
+// escape character, '.', a byte that needs hex escaping, and the separator's
+// own characters.
+func TestBuildPKKey_ValidAndInjective(t *testing.T) {
+	for _, sep := range []string{"/", "-", ".", "=", "--", "-.-", "x", "e", "2"} {
+		t.Run(sep, func(t *testing.T) {
+			alphabet := []string{"a", "_", ".", ":"}
+			for _, c := range sep {
+				if !slices.Contains(alphabet, string(c)) {
+					alphabet = append(alphabet, string(c))
+				}
+			}
+			values := componentValues(alphabet, 3)
+
+			seen := make(map[string][2]string, len(values)*len(values))
+			for _, a := range values {
+				for _, b := range values {
+					parts := []string{a, b}
+					key := BuildPKKey("v", parts, sep)
+					checkValidKey(t, key, parts)
+					if prev, ok := seen[key]; ok {
+						t.Fatalf("collision: %q and %q both encode to %q", prev, parts, key)
+					}
+					seen[key] = [2]string{a, b}
+				}
+			}
+		})
+	}
+}
+
+// componentValues returns every string of up to maxLen symbols drawn from
+// alphabet, including the empty string.
+func componentValues(alphabet []string, maxLen int) []string {
+	values := []string{""}
+	level := []string{""}
+	for range maxLen {
+		var next []string
+		for _, v := range level {
+			for _, c := range alphabet {
+				next = append(next, v+c)
+			}
+		}
+		values = append(values, next...)
+		level = next
+	}
+	return values
+}
+
+// TestBuildPKKey_RoundTripThroughNATS writes and reads keys built from
+// awkward values against a real server, which is the final authority on
+// what a valid key is (e.g. it silently drops keys with empty tokens).
+func TestBuildPKKey_RoundTripThroughNATS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+	kvb, err := InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	cases := []struct {
+		parts []string
+		sep   string
+	}{
+		{[]string{"alice@example.com"}, "/"},
+		{[]string{"a b"}, "/"},
+		{[]string{"zażółć"}, "/"},
+		{[]string{"2026-10-17T12:00:00+02:00"}, "/"},
+		{[]string{"a."}, "/"},
+		{[]string{"a..b"}, "/"},
+		{[]string{"."}, "/"},
+		{[]string{""}, "/"},
+		{[]string{"a", ""}, "."},
+		{[]string{"", ""}, "."},
+		{[]string{"x.", ".y"}, "-.-"},
+		{[]string{"globex-sales", "widget"}, "-"},
+	}
+	for _, tc := range cases {
+		key := BuildPKKey("view", tc.parts, tc.sep)
+		if _, err := kvb.Put(ctx, key, []byte(`{}`)); err != nil {
+			t.Errorf("Put(%q) for parts %q failed: %v", key, tc.parts, err)
+			continue
+		}
+		if _, err := kvb.Get(ctx, key); err != nil {
+			t.Errorf("Get(%q) for parts %q failed: %v", key, tc.parts, err)
+		}
+	}
+}
+
+// TestInitBucket_PreservesExistingConfig verifies that opening an existing
+// bucket never reconfigures it or discards retained history (WR-05).
+func TestInitBucket_PreservesExistingConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+
+	existing, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   DefaultBucket,
+		History:  5,
+		TTL:      time.Hour,
+		MaxBytes: 1 << 20,
+		Storage:  jetstream.FileStorage,
+	})
+	if err != nil {
+		t.Fatalf("CreateKeyValue failed: %v", err)
+	}
+	for i := range 3 {
+		if _, err := existing.Put(ctx, "view/pk/a", []byte{byte('0' + i)}); err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+	}
+
+	kvb, err := InitBucket(ctx, js, 1)
+	if err != nil {
+		t.Fatalf("InitBucket failed: %v", err)
+	}
+
+	status, err := kvb.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status failed: %v", err)
+	}
+	if status.History() != 5 || status.TTL() != time.Hour {
+		t.Errorf("bucket reconfigured: history=%d ttl=%v, want history=5 ttl=1h", status.History(), status.TTL())
+	}
+	history, err := kvb.History(ctx, "view/pk/a")
+	if err != nil {
+		t.Fatalf("History failed: %v", err)
+	}
+	if len(history) != 3 {
+		t.Errorf("retained revisions = %d, want 3", len(history))
+	}
+}
+
+// TestOpenBucket_NotFound verifies that the read-path open never creates the
+// bucket (WR-05).
+func TestOpenBucket_NotFound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, js := startEmbeddedNATS(t)
+
+	if _, err := OpenBucket(ctx, js); !errors.Is(err, jetstream.ErrBucketNotFound) {
+		t.Fatalf("OpenBucket on empty server: got %v, want ErrBucketNotFound", err)
+	}
+	if _, err := js.KeyValue(ctx, DefaultBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+		t.Errorf("OpenBucket created the bucket: %v", err)
+	}
 }

@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	natsql "github.com/gacopys/natsql/internal/cfg"
@@ -28,18 +28,41 @@ const DLQStreamName = "natsql-dlq"
 // DLQSubject is the subject for DLQ messages.
 const DLQSubject = "natsql.dlq"
 
-// EnsureDLQStream creates or updates the dead-letter queue stream.
-// Per D-13: DLQ stream is auto-created on startup if it does not exist.
-// Uses FileStorage with 7-day retention.
+// Bounds of the exponential backoff applied when a transient failure NAKs an
+// event (WR-02).
+const (
+	baseRedeliveryDelay = 250 * time.Millisecond
+	maxRedeliveryDelay  = 30 * time.Second
+)
+
+// jsErrCodeMessageTooLarge is the JetStream API error code for a message
+// larger than the stream's maximum message size; it is not exported by nats.go.
+const jsErrCodeMessageTooLarge jetstream.ErrorCode = 10054
+
+// EnsureDLQStream opens the dead-letter queue stream, creating it if it does
+// not exist (D-13). A new stream uses FileStorage with 7-day retention. An
+// existing stream is never reconfigured, so operator changes to its retention,
+// limits or replicas survive restarts (WR-05).
 func EnsureDLQStream(ctx context.Context, js jetstream.JetStream) (jetstream.Stream, error) {
-	cfg := jetstream.StreamConfig{
+	stream, err := js.Stream(ctx, DLQStreamName)
+	if err == nil {
+		return stream, nil
+	}
+	if !errors.Is(err, jetstream.ErrStreamNotFound) {
+		return nil, fmt.Errorf("opening DLQ stream: %w", err)
+	}
+
+	stream, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      DLQStreamName,
 		Subjects:  []string{DLQSubject},
 		Storage:   jetstream.FileStorage,
 		MaxAge:    7 * 24 * time.Hour,
 		Retention: jetstream.LimitsPolicy,
+	})
+	if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+		// Another engine created it between our lookup and create.
+		stream, err = js.Stream(ctx, DLQStreamName)
 	}
-	stream, err := js.CreateOrUpdateStream(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating DLQ stream: %w", err)
 	}
@@ -95,15 +118,21 @@ func publishToDLQ(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg
 // via cons.Drain() before exiting (D-58). This prevents unnecessary redeliveries
 // on restart by allowing in-flight messages to be acknowledged.
 //
-// Error handling per ARCHITECTURE.md §2.6 and D-14:
+// Error handling per ARCHITECTURE.md §5.2 and D-14:
 //   - Malformed events (ErrMalformedEvent): published to DLQ, acked, continue
-//   - KV write failures: original published to DLQ, acked, continue
+//   - Terminal KV write failures: original published to DLQ, acked, continue
+//   - Transient KV write failures: NAK'd with backoff; DLQ'd on the final delivery
 //   - Context canceled: return immediately
 //   - Consumer errors: logged, continue
 func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig, bucket jetstream.KeyValue, logger *slog.Logger, drainCh <-chan struct{}) error {
 	cons, err := SetupConsumer(ctx, js, viewCfg.SourceStream, viewCfg.Name, viewCfg.SourceSubject, viewCfg.Consumer)
 	if err != nil {
 		return fmt.Errorf("setting up consumer for view %q: %w", viewCfg.Name, err)
+	}
+
+	source, err := lookupSource(ctx, js, viewCfg.SourceStream)
+	if err != nil {
+		return fmt.Errorf("identifying source stream for view %q: %w", viewCfg.Name, err)
 	}
 
 	mapper, err := NewMapper(viewCfg)
@@ -115,7 +144,7 @@ func Run(ctx context.Context, js jetstream.JetStream, viewCfg *natsql.ViewConfig
 	if sep == "" {
 		sep = "/"
 	}
-	writer := NewWriter(bucket, viewCfg.Name, sep)
+	writer := NewWriter(bucket, viewCfg.Name, sep, source)
 
 	schema := viewCfg.BuildSchema()
 	if err := kvpkg.StoreSchema(ctx, bucket, viewCfg.Name, schema); err != nil {
@@ -209,32 +238,76 @@ const (
 	errorClassTerminal
 )
 
-// classifyWriteError categorizes a Writer.Apply error as transient or terminal.
-// Transient errors: temporary infrastructure issues that may resolve on retry.
-// Terminal errors: bad data or configuration that will never succeed.
+// classifyWriteError categorizes a Writer.Apply error as transient or terminal
+// (WR-02).
+//
+// Only errors that can never succeed on retry are terminal: an invalid KV key,
+// a row that can't be encoded, or a row larger than the server accepts. Every
+// other error, including ones not recognized here, is transient. That is the
+// safe default: treating a recoverable error as terminal acks a valid event
+// and silently drops its update from the view, while treating a permanent
+// error as transient only delays it, because the final delivery attempt still
+// goes to the DLQ. Errors are matched by identity and JetStream error code,
+// never by message text, which includes the primary key.
 func classifyWriteError(err error) errorClass {
-	if err == nil {
-		return errorClassTerminal // should not happen, be safe
+	if errors.Is(err, jetstream.ErrInvalidKey) ||
+		errors.Is(err, nats.ErrMaxPayload) ||
+		errors.Is(err, errEncodeRow) ||
+		errors.Is(err, errNilMutation) {
+
+		return errorClassTerminal
 	}
-
-	// Context cancellation is always transient
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return errorClassTransient
+	var apiErr *jetstream.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == jsErrCodeMessageTooLarge {
+		return errorClassTerminal
 	}
+	return errorClassTransient
+}
 
-	errStr := err.Error()
-
-	// NATS connection/network errors — transient
-	if strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no leader") ||
-		strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "connection closed") {
-
-		return errorClassTransient
+// redeliveryDelay returns how long to wait before redelivering an event that
+// has been delivered numDelivered times. The delay starts at 250ms and doubles
+// per delivery up to 30s, so a short outage can't use up MaxDeliver within
+// milliseconds.
+func redeliveryDelay(numDelivered uint64) time.Duration {
+	if numDelivered == 0 {
+		numDelivered = 1
 	}
+	return min(baseRedeliveryDelay<<min(numDelivered-1, 7), maxRedeliveryDelay)
+}
 
-	// Everything else is terminal — bad data, bad config, etc.
-	return errorClassTerminal
+// isFinalDelivery reports whether JetStream won't redeliver msg if it is
+// NAK'd, because it has reached the consumer's MaxDeliver.
+func isFinalDelivery(msg jetstream.Msg, maxDeliver int) bool {
+	meta, err := msg.Metadata()
+	if err != nil || maxDeliver <= 0 {
+		return false
+	}
+	return meta.NumDelivered >= uint64(maxDeliver)
+}
+
+// nakWithBackoff NAKs msg so it is redelivered after redeliveryDelay.
+func nakWithBackoff(msg jetstream.Msg, logger *slog.Logger) {
+	var numDelivered uint64
+	if meta, err := msg.Metadata(); err == nil {
+		numDelivered = meta.NumDelivered
+	}
+	if err := msg.NakWithDelay(redeliveryDelay(numDelivered)); err != nil {
+		logger.Warn("failed to nak event", "seq", getMsgSeq(msg), "error", err)
+	}
+}
+
+// deadLetter publishes msg to the DLQ and acks it. If the DLQ publish fails,
+// msg is NAK'd with backoff instead, so the event isn't lost.
+func deadLetter(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewName string, cause error, logger *slog.Logger) {
+	seq := getMsgSeq(msg)
+	if err := publishToDLQ(ctx, js, msg, viewName, cause); err != nil {
+		logger.Error("DLQ publish failed, nacking event", "seq", seq, "error", err)
+		nakWithBackoff(msg, logger)
+		return
+	}
+	if err := msg.Ack(); err != nil {
+		logger.Warn("failed to ack event after DLQ publish", "seq", seq, "error", err)
+	}
 }
 
 func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, writer *Writer, msg jetstream.Msg, viewCfg *natsql.ViewConfig, logger *slog.Logger) {
@@ -259,10 +332,8 @@ func processEvent(ctx context.Context, js jetstream.JetStream, mapper *Mapper, w
 func handleMapError(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewName string, mapErr error, logger *slog.Logger) {
 	seq := getMsgSeq(msg)
 	if !errors.Is(mapErr, ErrMalformedEvent) {
-		if nakErr := msg.Nak(); nakErr != nil {
-			logger.Warn("failed to nak event", "seq", seq, "error", nakErr)
-		}
 		logger.Error("unexpected mapper error", "seq", seq, "error", mapErr)
+		nakWithBackoff(msg, logger)
 		return
 	}
 
@@ -271,17 +342,8 @@ func handleMapError(ctx context.Context, js jetstream.JetStream, msg jetstream.M
 		return
 	}
 
-	if dlqErr := publishToDLQ(ctx, js, msg, viewName, mapErr); dlqErr != nil {
-		logger.Error("DLQ publish failed, nacking event", "seq", seq, "error", dlqErr)
-		if nakErr := msg.Nak(); nakErr != nil {
-			logger.Warn("failed to nak event after DLQ failure", "seq", seq, "error", nakErr)
-		}
-	} else {
-		if ackErr := msg.Ack(); ackErr != nil {
-			logger.Warn("failed to ack malformed event", "seq", seq, "error", ackErr)
-		}
-	}
 	logger.Warn("skipped malformed event", "seq", seq, "error", mapErr)
+	deadLetter(ctx, js, msg, viewName, mapErr, logger)
 }
 
 func handleWriteError(ctx context.Context, js jetstream.JetStream, msg jetstream.Msg, viewCfg *natsql.ViewConfig, writeErr error, logger *slog.Logger) {
@@ -295,23 +357,18 @@ func handleWriteError(ctx context.Context, js jetstream.JetStream, msg jetstream
 
 	switch classifyWriteError(writeErr) {
 	case errorClassTransient:
-		logger.Warn("transient write failure, nacking for redelivery", "seq", seq, "error", writeErr)
-		if nakErr := msg.Nak(); nakErr != nil {
-			logger.Warn("failed to nak transient event", "seq", seq, "error", nakErr)
+		if !isFinalDelivery(msg, effectiveMaxDeliver(viewCfg.Consumer)) {
+			logger.Warn("transient write failure, retrying with backoff", "seq", seq, "error", writeErr)
+			nakWithBackoff(msg, logger)
+			return
 		}
+		// JetStream won't redeliver a NAK'd final attempt, so dead-letter it
+		// rather than strand it outside both the view and the DLQ.
+		logger.Error("transient write failure on final delivery attempt, sending to DLQ", "seq", seq, "error", writeErr)
 	case errorClassTerminal:
 		logger.Error("terminal write failure, sending to DLQ", "seq", seq, "error", writeErr)
-		if dlqErr := publishToDLQ(ctx, js, msg, viewCfg.Name, writeErr); dlqErr != nil {
-			logger.Error("DLQ publish failed, nacking event", "seq", seq, "error", dlqErr)
-			if nakErr := msg.Nak(); nakErr != nil {
-				logger.Warn("failed to nak event after DLQ failure", "seq", seq, "error", nakErr)
-			}
-		} else {
-			if ackErr := msg.Ack(); ackErr != nil {
-				logger.Warn("failed to ack event after DLQ publish", "seq", seq, "error", ackErr)
-			}
-		}
 	}
+	deadLetter(ctx, js, msg, viewCfg.Name, writeErr, logger)
 }
 
 // getMsgSeq safely extracts the stream sequence from a message's metadata.
